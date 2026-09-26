@@ -2,6 +2,7 @@ pub mod cancellation;
 pub mod answer_ui;
 pub mod ink_session;
 pub mod page_layout;
+pub mod note_page;
 pub mod skeleton;
 pub mod config;
 pub mod coordinator;

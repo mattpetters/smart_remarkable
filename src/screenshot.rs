@@ -113,6 +113,16 @@ impl Screenshot {
     }
 
     pub fn take_screenshot(&mut self) -> Result<()> {
+        self.capture_with_orientation(None)
+    }
+
+    /// Menus and keyboards obscure the toolbar used for orientation detection.
+    /// Retain the canvas orientation while a verified UI transaction is open.
+    pub fn take_screenshot_oriented(&mut self, rotated: bool) -> Result<()> {
+        self.capture_with_orientation(Some(rotated))
+    }
+
+    fn capture_with_orientation(&mut self, rotated: Option<bool>) -> Result<()> {
         self.decoded_pixels.take();
         if let ScreenshotMode::Simulated { simulator } = &mut self.mode {
             // In simulation mode, just advance to next image
@@ -136,7 +146,7 @@ impl Screenshot {
 
         // Process the image data (transpose, color correction, etc.)
         debug!("screenshot: processing image");
-        let processed_data = self.process_image(screenshot_data)?;
+        let processed_data = self.process_image(screenshot_data, rotated)?;
 
         // Update the data
         if let ScreenshotMode::Real { data, .. } = &mut self.mode {
@@ -262,7 +272,7 @@ impl Screenshot {
         Ok(buffer)
     }
 
-    fn process_image(&self, data: Vec<u8>) -> Result<Vec<u8>> {
+    fn process_image(&self, data: Vec<u8>, rotated: Option<bool>) -> Result<Vec<u8>> {
         // Encode the raw data to PNG
         debug!("Encoding raw image data to PNG");
         let png_data = self.encode_png(&data)?;
@@ -277,7 +287,7 @@ impl Screenshot {
         // downstream — marquee detection, LLM crops, toolbar pixel checks,
         // placement planning — works in the orientation the user sees.
         // Pen/touch injection mirrors coordinates back (util::maybe_rot180_virtual).
-        let rotated = Self::detect_ui_rotated(&resized_img);
+        let rotated = rotated.unwrap_or_else(|| Self::detect_ui_rotated(&resized_img));
         crate::util::set_ui_rotated_180(rotated);
         let resized_img = if rotated { resized_img.rotate180() } else { resized_img };
 

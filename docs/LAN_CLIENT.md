@@ -23,11 +23,15 @@ No OpenAI API key is required for this route.
   with two parallel touch contacts and checks the resulting ink movement. It
   rescans newly revealed writing and prefers room for ten full-size lines. At a
   confirmed stationary boundary, it can use existing clear space for a shorter
-  reply (at least four lines), with a tighter model line budget. Unverified motion
-  or four unsuccessful pans aborts before drawing. Bottom UI chrome is excluded.
+  reply (at least four lines), with a tighter model line budget. When the verified
+  page still has no room, it inserts one native note page immediately after the
+  current page and continues there. Unverified motion aborts before insertion
+  or drawing. Bottom UI chrome is excluded.
 - The marked-answer prompt temporarily selects the actual Ballpoint pen type,
   medium width, and red color. It snapshots the toolbar's selected row and
-  visibility, plus the original pen and Ballpoint profiles. The saved selection
+  visibility, plus the original pen and Ballpoint profiles. It also captures the
+  selected tool's icon so restoration follows tools that move when a PDF note
+  page adds a Text tool to the toolbar. The saved selection
   is restored generically, including a highlighter or lasso, after success or
   a normal request/render/cancellation error. Font size and spacing stay unchanged.
 - Extra gestures during capture, inference, or drawing are discarded immediately;
@@ -60,6 +64,15 @@ filters simple ruled, dotted, and grid templates. Arbitrary templates, faint ink
 and writing farther down beyond a large blank gap can still defeat this image
 heuristic. Answers are persistent notebook edits; use a disposable notebook for
 initial layout testing.
+
+Note-page insertion uses the native page overview: identify the current page,
+select it, choose **More → Add page after**, verify the new current thumbnail,
+and open its canvas. It does not use the floating Add button, which appends to
+the document's end on firmware 3.27. The captured question and original visible
+page remain the model's input, even after scrolling or insertion. A request
+creates at most one page. The UI controls currently target English Paper Pro
+firmware 3.27; an unfamiliar menu or an unchanged current-page indicator stops the
+operation. The full new canvas is scanned for clear space before drawing. Document files are never modified directly.
 
 ## Prerequisites
 
@@ -214,7 +227,7 @@ The trigger test sends a burst larger than the event queue and verifies that non
 is replayed after completion, while a subsequent idle trigger is accepted.
 Temporary-pen tests cover generic selected rows, hidden toolbars, separate pen
 profiles, successful replies, request failures, partial setup rollback, and
-ambiguous settings detection. On-device state checks verified selecting red
+ambiguous settings detection, and icon-based restoration after a toolbar row shifts. On-device state checks verified selecting red
 Ballpoint and restoring the original profile and active tool after a layout
 failure. A subsequent on-device request rendered 14 lines at scale 1.0 and
 verified restoring the original tool/profile on the success path as well. `examples/check_answer_pen.rs` provides an on-device
@@ -222,9 +235,15 @@ check without drawing ink or calling a model; `--fail` exercises error cleanup.
 Run it only when the gesture listener is stopped and the tablet is not being used.
 The UI reader targets Paper Pro firmware 3.27; an unrecognized settings panel
 aborts setup rather than guessing. Process termination cannot perform UI cleanup.
+An on-device insertion check created and opened a native PDF note page immediately
+after the source page and restored the lasso after its toolbar position changed.
+`examples/check_note_page.rs` performs this check without drawing or calling a
+model; it creates one page, so run it only on a test document while the listener
+is idle and the tablet is not being used. Overflow decisions have automated
+coverage; a full gesture-to-reply overflow run remains to be exercised.
 Service tests cover adopting a running request, reconnecting without restarting
 the listener, recovering a rebooted tablet, preserving credentials, stopping
-autostart, and credential migration. Recovery checks do not capture the screen, submit questions, or replay previous requests.
+autostart, credential migration, and port reuse after a bridge reload. Recovery checks do not capture the screen, submit questions, or replay previous requests.
 The original font-render test used its author's absolute output path; it now
 asserts the in-memory bitmap instead.
 

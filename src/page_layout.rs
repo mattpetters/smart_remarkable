@@ -179,6 +179,8 @@ fn upward_shift(before: &[bool], after: &[bool]) -> Option<i32> {
 trait PageUi: Send {
     async fn capture(&mut self) -> Result<Screenshot>;
     async fn scroll(&mut self) -> Result<()>;
+    /// Insert after the current page and return only once its canvas is ready.
+    async fn add_note_page(&mut self) -> Result<Screenshot>;
 }
 
 struct DevicePage(Touch);
@@ -192,6 +194,19 @@ impl PageUi for DevicePage {
     async fn scroll(&mut self) -> Result<()> {
         self.0.scroll_page_down().await
     }
+    async fn add_note_page(&mut self) -> Result<Screenshot> {
+        crate::note_page::insert_after_current(&mut self.0).await
+    }
+}
+
+async fn continue_on_note_page(ui: &mut impl PageUi, x: i32) -> Result<Rect> {
+    let screen = ui.add_note_page().await?;
+    // A late frame, retained template, or unexpected content must not become
+    // permission to draw over another page. Page insertion is attempted once.
+    let rect = rect_after(bottom(&ink_mask(&screen)).unwrap_or(55), x)?;
+    ensure!(rect.h >= ANSWER_HEIGHT, "New note page has no verified clear answer space");
+    log::info!("Append layout: continuing on a new note page");
+    Ok(rect)
 }
 
 async fn prepare_with(ui: &mut impl PageUi, selection: Rect) -> Result<Rect> {
@@ -210,10 +225,9 @@ async fn prepare_with(ui: &mut impl PageUi, selection: Rect) -> Result<Rect> {
                 return Ok(rect);
             }
         }
-        ensure!(
-            attempt < MAX_SCROLLS,
-            "Could not find enough blank space below the writing after scrolling; no answer was drawn"
-        );
+        if attempt == MAX_SCROLLS {
+            return continue_on_note_page(ui, selection.x).await;
+        }
         ui.scroll().await?;
         let after = ink_mask(&ui.capture().await?);
         let shift = match upward_shift(&mask, &after) {
@@ -231,6 +245,7 @@ async fn prepare_with(ui: &mut impl PageUi, selection: Rect) -> Result<Rect> {
                             return Ok(rect);
                         }
                     }
+                    return continue_on_note_page(ui, selection.x).await;
                 }
                 anyhow::bail!("Could not verify page scrolling; no answer was drawn");
             }
@@ -243,7 +258,8 @@ async fn prepare_with(ui: &mut impl PageUi, selection: Rect) -> Result<Rect> {
 }
 
 /// Called after capturing question/context and selecting the answer pen, which
-/// dismisses the lasso overlay. Only the viewport moves; no existing ink is moved.
+/// dismisses the lasso overlay. Scroll first, then insert a note page if needed.
+/// The caller retains the original question and context images throughout.
 pub async fn prepare_append(selection: Rect) -> Result<Rect> {
     prepare_with(&mut DevicePage(Touch::new(false, TriggerCorner::FourFinger)), selection).await
 }
@@ -279,6 +295,7 @@ mod tests {
     struct FakePage {
         frames: VecDeque<Screenshot>,
         scrolls: usize,
+        inserted: usize,
     }
     #[async_trait]
     impl PageUi for FakePage {
@@ -289,6 +306,10 @@ mod tests {
             self.scrolls += 1;
             Ok(())
         }
+        async fn add_note_page(&mut self) -> Result<Screenshot> {
+            self.inserted += 1;
+            self.capture().await
+        }
     }
 
     #[tokio::test]
@@ -296,6 +317,7 @@ mod tests {
         let mut ui = FakePage {
             frames: [viewport(0, &[880, 1100]), viewport(420, &[880, 1100]), viewport(840, &[880, 1100])].into(),
             scrolls: 0,
+            inserted: 0,
         };
         let rect = prepare_with(&mut ui, Rect { x: 100, y: 90, w: 200, h: 50 }).await.unwrap();
         assert_eq!(ui.scrolls, 2);
@@ -308,9 +330,11 @@ mod tests {
         let mut ui = FakePage {
             frames: [viewport(0, &[300])].into(),
             scrolls: 0,
+            inserted: 0,
         };
         let rect = prepare_with(&mut ui, Rect { x: 100, y: 90, w: 200, h: 50 }).await.unwrap();
         assert_eq!(ui.scrolls, 0);
+        assert_eq!(ui.inserted, 0);
         assert_eq!(rect.y, 335);
     }
 
@@ -319,22 +343,51 @@ mod tests {
         let mut ui = FakePage {
             frames: [viewport(0, &[700]), viewport(0, &[700])].into(),
             scrolls: 0,
+            inserted: 0,
         };
         let rect = prepare_with(&mut ui, Rect { x: 100, y: 90, w: 200, h: 50 }).await.unwrap();
         assert_eq!(rect.y, 735);
         assert_eq!(rect.h, 235);
         assert_eq!(ui.scrolls, 1);
+        assert_eq!(ui.inserted, 0);
     }
 
     #[tokio::test]
-    async fn refuses_stalled_scroll_or_unrelated_blank_capture() {
-        for after in [viewport(0, &[880]), viewport(0, &[])] {
+    async fn inserts_one_note_page_when_a_verified_full_page_cannot_scroll() {
+        let mut ui = FakePage {
+            frames: [viewport(0, &[900]), viewport(0, &[900]), viewport(0, &[])].into(),
+            scrolls: 0,
+            inserted: 0,
+        };
+        let rect = prepare_with(&mut ui, Rect { x: 100, y: 900, w: 200, h: 60 }).await.unwrap();
+        assert_eq!(ui.scrolls, 1);
+        assert_eq!(ui.inserted, 1);
+        assert_eq!(rect.y, 71); // old question coordinates belong to the old page
+        assert!(rect.h >= ANSWER_HEIGHT);
+    }
+
+    #[tokio::test]
+    async fn does_not_keep_inserting_if_the_new_canvas_is_not_clear() {
+        let mut ui = FakePage {
+            frames: [viewport(0, &[900]), viewport(0, &[900]), viewport(0, &[900])].into(),
+            scrolls: 0,
+            inserted: 0,
+        };
+        assert!(prepare_with(&mut ui, Rect { x: 100, y: 900, w: 200, h: 60 }).await.is_err());
+        assert_eq!(ui.inserted, 1);
+    }
+
+    #[tokio::test]
+    async fn refuses_unrelated_blank_capture_without_adding_a_page() {
+        for after in [viewport(0, &[]), viewport(0, &[100, 600])] {
             let mut ui = FakePage {
                 frames: [viewport(0, &[880]), after].into(),
                 scrolls: 0,
+                inserted: 0,
             };
             let error = prepare_with(&mut ui, Rect { x: 100, y: 850, w: 200, h: 60 }).await.unwrap_err();
             assert!(error.to_string().contains("verify page scrolling"));
+            assert_eq!(ui.inserted, 0);
             assert_eq!(ui.scrolls, 1);
         }
     }
@@ -344,6 +397,7 @@ mod tests {
         let mut ui = FakePage {
             frames: [viewport(0, &[650]), viewport(420, &[650])].into(),
             scrolls: 0,
+            inserted: 0,
         };
         let rect = prepare_with(&mut ui, Rect { x: 100, y: 645, w: 200, h: 40 }).await.unwrap();
         assert_eq!(ui.scrolls, 1);

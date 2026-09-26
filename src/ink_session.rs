@@ -90,15 +90,61 @@ fn read_settings(ss: &Screenshot) -> Option<Settings> {
 trait Ui: Send {
     async fn read(&mut self) -> Result<State>;
     async fn tap(&mut self, point: (i32, i32)) -> Result<()>;
+    async fn remember_tool(&mut self, _y: i32) -> Result<()> {
+        Ok(())
+    }
+    async fn locate_tool(&mut self, y: i32) -> Result<i32> {
+        Ok(y)
+    }
 }
 
-struct DeviceUi(Touch);
+struct DeviceUi {
+    touch: Touch,
+    rotated: bool,
+    icon: Option<Vec<bool>>,
+}
+
+fn tool_icon(ss: &Screenshot, y: i32) -> Vec<bool> {
+    let inverted = ss.get_pixel(5, y as u32).map(|(r, g, b)| r.max(g).max(b) < 128).unwrap_or(false);
+    (y - 20..y + 20)
+        .flat_map(|yy| (8..48).map(move |x| (x, yy)))
+        .map(|(x, yy)| {
+            let dark = ss.get_pixel(x, yy as u32).map(|(r, g, b)| r.max(g).max(b) < 128).unwrap_or(false);
+            dark != inverted
+        })
+        .collect()
+}
+
+fn find_tool_icon(ss: &Screenshot, saved: &[bool]) -> Result<i32> {
+    let count = saved.iter().filter(|&&p| p).count();
+    ensure!(count >= 12, "Original tool icon was not recognizable");
+    let mut scores: Vec<_> = (170..480)
+        .map(|y| {
+            let current = tool_icon(ss, y);
+            let total = count + current.iter().filter(|&&p| p).count();
+            let shared = saved.iter().zip(&current).filter(|(a, b)| **a && **b).count();
+            (y, 2.0 * shared as f32 / total.max(1) as f32)
+        })
+        .collect();
+    scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let (y, score) = scores[0];
+    let other = scores.iter().filter(|(yy, _)| (yy - y).abs() > 8).map(|(_, score)| *score).fold(0.0, f32::max);
+    ensure!(score >= 0.8 && score > other + 0.1, "Could not uniquely relocate the original tool icon");
+    Ok(y)
+}
+
+impl DeviceUi {
+    fn capture(&self) -> Result<Screenshot> {
+        let mut ss = Screenshot::new()?;
+        ss.take_screenshot_oriented(self.rotated)?;
+        Ok(ss)
+    }
+}
 
 #[async_trait]
 impl Ui for DeviceUi {
     async fn read(&mut self) -> Result<State> {
-        let mut ss = Screenshot::new()?;
-        ss.take_screenshot()?;
+        let ss = self.capture()?;
         let toolbar = Touch::screenshot_palette_open(&ss);
         // Preserve the detected selection's position generically, including
         // tools this client does not name. Only the temporary pen slot needs
@@ -118,7 +164,23 @@ impl Ui for DeviceUi {
     }
 
     async fn tap(&mut self, point: (i32, i32)) -> Result<()> {
-        self.0.tap(point).await
+        self.touch.tap(point).await
+    }
+
+    async fn remember_tool(&mut self, y: i32) -> Result<()> {
+        // The two pen slots stay fixed. Other tools shift when PDFs gain a
+        // native note page (which includes a Text tool); retain their actual icon.
+        if y >= 160 {
+            self.icon = Some(tool_icon(&self.capture()?, y));
+        }
+        Ok(())
+    }
+
+    async fn locate_tool(&mut self, y: i32) -> Result<i32> {
+        match &self.icon {
+            Some(icon) => find_tool_icon(&self.capture()?, icon),
+            None => Ok(y),
+        }
     }
 }
 
@@ -201,6 +263,7 @@ impl<U: Ui> Session<U> {
         let visible = self.read().await?;
         self.previous_tool = visible.tool_y;
         ensure!(self.previous_tool.is_some(), "Cannot preserve an unidentified active tool");
+        self.ui.remember_tool(self.previous_tool.unwrap()).await?;
         let original = self.panel().await?;
         self.original = Some(original);
         if original.kind != AI.kind {
@@ -235,10 +298,15 @@ impl<U: Ui> Session<U> {
                 self.tap(TOGGLE).await?;
                 state = self.read().await?;
             }
+            let tool_y = self.ui.locate_tool(tool_y).await?;
+            self.previous_tool = Some(tool_y);
             if state.tool_y != Some(tool_y) {
                 self.tap((28, tool_y)).await?;
             }
-            ensure!(self.read().await?.tool_y == Some(tool_y), "Could not restore active tool");
+            ensure!(
+                self.read().await?.tool_y.is_some_and(|y| (y - tool_y).abs() <= 2),
+                "Could not restore active tool"
+            );
         }
         if self.initial.popover && !self.read().await?.popover {
             if let Some(y) = self.previous_tool {
@@ -294,7 +362,15 @@ where
         matches!(DeviceModel::detect(), DeviceModel::RemarkablePaperPro),
         "Temporary answer pen currently supports Paper Pro only"
     );
-    with_ui(DeviceUi(Touch::new(false, TriggerCorner::UpperRight)), operation).await
+    with_ui(
+        DeviceUi {
+            touch: Touch::new(false, TriggerCorner::UpperRight),
+            rotated: crate::util::ui_rotated_180(),
+            icon: None,
+        },
+        operation,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -463,5 +539,37 @@ mod tests {
             assert_eq!(read_settings(&panel(settings, false)), Some(settings));
             assert_eq!(read_settings(&panel(settings, true)), None);
         }
+    }
+
+    #[test]
+    fn relocates_selected_tool_when_note_page_adds_a_toolbar_row() {
+        let screen = |rows: &[u32], selected: bool| {
+            let mut img = image::RgbImage::from_pixel(768, 1024, image::Rgb([255; 3]));
+            for &row in rows {
+                if selected {
+                    for y in row - 26..row + 27 {
+                        for x in 2..54 {
+                            img.put_pixel(x, y, image::Rgb([0; 3]));
+                        }
+                    }
+                }
+                // An asymmetric icon with several distinct strokes.
+                for y in row - 10..row + 11 {
+                    for x in 18..38 {
+                        if x == 18 || y == row - 10 || (y > row && x > 30) {
+                            img.put_pixel(x, y, image::Rgb([if selected { 255 } else { 0 }; 3]));
+                        }
+                    }
+                }
+            }
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(img).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            Screenshot::from_png_data(bytes.into_inner())
+        };
+        let saved = tool_icon(&screen(&[240], true), 240);
+        assert_eq!(find_tool_icon(&screen(&[294], false), &saved).unwrap(), 294);
+        assert_eq!(find_tool_icon(&screen(&[240], false), &saved).unwrap(), 240);
+        assert!(find_tool_icon(&screen(&[240, 347], false), &saved).is_err());
+        assert!(find_tool_icon(&screen(&[], false), &saved).is_err());
     }
 }
