@@ -639,6 +639,7 @@ async fn run_smart_remarkable_loop(
     // refining an existing sketch
     let input_image_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let answer_marker_slot: Arc<Mutex<Option<Rect>>> = Arc::new(Mutex::new(None));
+    let answer_delivery_result: smart_remarkable::answer_delivery::DeliveryResult = Arc::new(Mutex::new(None));
 
     // Register tools
     register_tools(
@@ -650,6 +651,8 @@ async fn run_smart_remarkable_loop(
         Arc::clone(&selection_slot),
         Arc::clone(&input_image_slot),
         Arc::clone(&answer_marker_slot),
+        Arc::clone(&answer_delivery_result),
+        Arc::clone(&cancellation),
         &config,
     )?;
 
@@ -726,6 +729,7 @@ async fn run_smart_remarkable_loop(
                     let input_image_slot_clone = Arc::clone(&input_image_slot);
                     let pen_clone = Arc::clone(&pen);
                     let answer_marker_slot_clone = Arc::clone(&answer_marker_slot);
+                    let answer_delivery_result_clone = Arc::clone(&answer_delivery_result);
                     tokio::spawn(async move {
                         coordinator::processing_task(
                             config_clone,
@@ -739,6 +743,7 @@ async fn run_smart_remarkable_loop(
                             input_image_slot_clone,
                             pen_clone,
                             answer_marker_slot_clone,
+                            answer_delivery_result_clone,
                             trigger_source,
                         ).await
                     })
@@ -826,6 +831,8 @@ fn register_tools(
     selection_slot: Arc<Mutex<Option<Rect>>>,
     input_image_slot: Arc<Mutex<Option<String>>>,
     answer_marker_slot: Arc<Mutex<Option<Rect>>>,
+    answer_delivery_result: smart_remarkable::answer_delivery::DeliveryResult,
+    answer_cancellation: Arc<SmartRemarkableCancellation>,
     config: &Config,
 ) -> Result<()> {
     use serde_json::Value as json;
@@ -1239,14 +1246,19 @@ fn register_tools(
         // artificial delay between lines.
 
         let tool_config_draw_answer = load_config("tool_draw_answer.json");
+        let paginate = serde_json::from_str::<json>(&load_config(&config.prompt))?
+            ["paginate_answer"].as_bool().unwrap_or(false);
         engine.register_tool(
             "draw_answer",
             serde_json::from_str::<serde_json::Value>(tool_config_draw_answer.as_str())?,
             Box::new(move |arguments: json| {
-                let lines: Vec<String> = match arguments["lines"].as_array() {
-                    Some(arr) => arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(),
-                    None => {
+                let lines: Vec<String> = match serde_json::from_value::<Vec<String>>(arguments["lines"].clone()) {
+                    Ok(lines) => lines,
+                    Err(_) => {
                         log::error!("draw_answer tool called without valid 'lines' argument");
+                        if let Ok(mut slot) = answer_delivery_result.lock() {
+                            *slot = Some(Err("Answer contains invalid lines".into()));
+                        }
                         return;
                     }
                 };
@@ -1259,6 +1271,16 @@ fn register_tools(
 
                 let placement = placement_slot.lock().ok().and_then(|mut slot| slot.take());
                 let rect = placement.unwrap_or(Rect { x: 40, y: 80, w: 688, h: 900 });
+                if paginate && !no_draw && !test_mode {
+                    let result = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(
+                        smart_remarkable::answer_delivery::draw_complete_answer(&lines, rect, Arc::clone(&pen),
+                            Arc::clone(&answer_marker_slot), Arc::clone(&answer_cancellation))));
+                    if let Err(error) = &result { log::error!("Answer delivery failed: {error}"); }
+                    if let Ok(mut slot) = answer_delivery_result.lock() {
+                        *slot = Some(result.map_err(|error| error.to_string()));
+                    }
+                    return;
+                }
                 let mut line_svgs = match answer_svgs(&lines, rect) {
                     Ok(fragments) => fragments,
                     Err(error) => {

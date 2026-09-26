@@ -1,13 +1,13 @@
 {
   "name": "draw_answer",
-  "description": "Draw a short answer to the screen as a list of lines. Do not compute any coordinates or SVG yourself \u2014 just provide the text content, one entry per line, in the order they should appear top to bottom. The app lays them out for you.",
+  "description": "Draw a complete answer to the screen as a list of lines. Do not compute any coordinates or SVG yourself \u2014 just provide the text content, one entry per line, in the order they should appear top to bottom. The app lays them out for you.",
   "internal_command": "draw_answer",
   "parameters": {
     "type": "object",
     "properties": {
       "lines": {
         "type": "array",
-        "description": "The answer as plain-text lines, top to bottom. Follow the prompt and Reply layout limits: at most 16 lines and 52 characters per line. Prefix bullet lines with - . Do not include an AI label, Markdown styling, coordinates, or SVG; the app adds attribution and status.",
+        "description": "The answer as plain-text lines, top to bottom. Follow the prompt and Reply layout limits: at most 128 lines and 52 characters per line. Prefix bullet lines with - . Do not include an AI label, Markdown styling, coordinates, or SVG; the app adds attribution and status.",
         "items": {
           "type": "string"
         }

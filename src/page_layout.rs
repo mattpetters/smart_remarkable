@@ -264,6 +264,10 @@ pub async fn prepare_append(selection: Rect) -> Result<Rect> {
     prepare_with(&mut DevicePage(Touch::new(false, TriggerCorner::FourFinger)), selection).await
 }
 
+pub async fn prepare_continuation(x: i32) -> Result<Rect> {
+    continue_on_note_page(&mut DevicePage(Touch::new(false, TriggerCorner::FourFinger)), x).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

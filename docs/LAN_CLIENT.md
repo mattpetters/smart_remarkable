@@ -10,11 +10,14 @@ No OpenAI API key is required for this route.
 ## First iteration
 
 - Native lasso selection, then a four-finger tap.
-- A concise answer returned through `draw_answer`, with a line/character budget
-  calculated from available space (up to 16 lines and 52 characters per line).
+- A complete, concise answer returned through `draw_answer`, with line width
+  calculated from available space. Replies can span pages (up to 128 model lines),
+  without reducing the font size or stopping at the first page's line budget.
 - An AI label and left margin rule distinguish answers from user handwriting.
 - An empty checkbox appears when a request starts; a check marks a completed
-  answer and a cross marks failure. The marker remains part of the answer ink.
+  answer and a cross marks failure. An arrow marks a page whose reply continues
+  on the next note page; only the final portion receives a check. The marker
+  remains part of the answer ink.
 - Consistent 22px monospaced text and 31px line spacing in virtual screen units;
   short answers no longer expand to fill the available space.
 - The answer appears line by line below the lowest detected writing, including
@@ -23,9 +26,9 @@ No OpenAI API key is required for this route.
   with two parallel touch contacts and checks the resulting ink movement. It
   rescans newly revealed writing and prefers room for ten full-size lines. At a
   confirmed stationary boundary, it can use existing clear space for a shorter
-  reply (at least four lines), with a tighter model line budget. When the verified
-  page still has no room, it inserts one native note page immediately after the
-  current page and continues there. Unverified motion aborts before insertion
+  first portion (at least four lines). When the verified page has no room, or
+  the answer outgrows that space, it inserts a native note page immediately after
+  the current page and continues there. Unverified motion aborts before insertion
   or drawing. Bottom UI chrome is excluded.
 - The marked-answer prompt temporarily selects the actual Ballpoint pen type,
   medium width, and red color. It snapshots the toolbar's selected row and
@@ -39,6 +42,9 @@ No OpenAI API key is required for this route.
 - Blank paragraph separators in a model response are omitted instead of rejecting
   the answer. Pen selection is idempotent; answer and failure marks reuse the pen
   prepared for the pending marker without reopening its settings.
+- Interrupted HTTP requests reuse the same request ID to retrieve or rejoin the
+  original Codex run. A transport retry never repeats that run's tools. Drawing
+  failures propagate to request status instead of reporting partial ink as success.
 - Live web search for explicit lookups, current facts, unfamiliar terms, and
   factual uncertainty. Researched replies include a compact source name/domain.
 - Full Codex tool access for this personal-use workflow, with short conversational
@@ -69,10 +75,12 @@ Note-page insertion uses the native page overview: identify the current page,
 select it, choose **More → Add page after**, verify the new current thumbnail,
 and open its canvas. It does not use the floating Add button, which appends to
 the document's end on firmware 3.27. The captured question and original visible
-page remain the model's input, even after scrolling or insertion. A request
-creates at most one page. The UI controls currently target English Paper Pro
+page remain the model's input, even after scrolling or insertion. A reply can use
+up to 12 page areas, with at most 256 lines after local wrapping. The UI controls currently target English Paper Pro
 firmware 3.27; an unfamiliar menu or an unchanged current-page indicator stops the
-operation. The full new canvas is scanned for clear space before drawing. Document files are never modified directly.
+operation. UI-state reads tolerate a delayed redraw, but insertion and pen strokes
+are never blindly replayed. The full new canvas is scanned for clear space before
+drawing. Document files are never modified directly.
 
 ## Prerequisites
 
@@ -95,8 +103,14 @@ operation. The full new canvas is scanned for clear space before drawing. Docume
 
 Recovery checks run every 15 seconds while healthy and every 30 seconds after a
 failure; connection timeouts can add delay. This is automatic recovery, not a
-guarantee of zero downtime. Failed prompts are never replayed automatically. Retry
-the gesture once the connection returns. Keep the same page open while an answer
+guarantee of zero downtime. Each active request allows up to four HTTP attempts,
+with 1/2/4-second backoff and a 240-second total recovery deadline. The bridge
+retains up to 32 request receipts for 30 minutes in memory: a request digest and
+bounded answer or error, without input images. A duplicate ID joins or retrieves
+the original invocation; a missing receipt after a restart causes an explicit
+failure instead of running the tools again. Model failures and partially drawn
+ink are not replayed automatically. Retry the gesture after checking any partial
+answer and restoring the question selection. Keep the same page open while an answer
 is pending; page-change detection is still a separate UX requirement.
 
 The global listener is implemented independently of notebooks. Different
@@ -141,7 +155,10 @@ with reMarkable's lasso tool, then tap the screen with four fingers. Allow the
 answer to finish before interacting with the notebook. The checkbox acknowledges
 the request while Codex is thinking and remains pending while the answer is being
 written. This is persistent status ink, not a transient overlay or animation. A
-failed request leaves a crossed box; retry by selecting the question again.
+failed request leaves a crossed box when the answer area is still known. A
+generation or transport failure before rendering also writes a brief retry notice.
+If navigation fails between pages, the last portion retains its continuation
+arrow rather than placing a failure mark at unverified coordinates.
 The viewport may scroll down before the checkbox appears. The original question
 and visible-page context are captured first; scrolling does not replace those
 images. Failed layout verification stops before submission or answer ink, so it
@@ -211,6 +228,12 @@ docker run --rm --platform linux/arm64 \
 The bridge tests cover authorization, malformed requests, remote-image rejection,
 output bounds, timeouts, single-flight inference, live-search/full-access CLI
 arguments, query-free tool-activity counting, and compact source formatting.
+Receipt tests cover concurrent retries sharing one run, lost-response retrieval,
+conflicting IDs, expired receipts, and cached failures. Rust transport tests drop
+or corrupt a response and verify that recovery reuses its original ID. Pagination
+tests draw 65 unique lines across four page areas, once each at full size; failed
+pen strokes and page edits are not replayed. Long lines are wrapped without
+discarding content, and unsupported output is rejected rather than truncated.
 A live synthetic image request performed three web lookups and returned a
 three-line answer with official-source attribution within the tablet line limits.
 They also verify selection/page ordering, no context carried into a subsequent
@@ -239,8 +262,19 @@ An on-device insertion check created and opened a native PDF note page immediate
 after the source page and restored the lasso after its toolbar position changed.
 `examples/check_note_page.rs` performs this check without drawing or calling a
 model; it creates one page, so run it only on a test document while the listener
-is idle and the tablet is not being used. Overflow decisions have automated
-coverage; a full gesture-to-reply overflow run remains to be exercised.
+is idle and the tablet is not being used. `examples/check_complete_answer.rs`
+accepts a synthetic answer fixture and exercises multi-page pen output, including
+continuation markers and saved-tool restoration, on newly inserted note pages.
+It creates persistent test pages, so run it only in a test document while the
+listener is idle and the tablet is not being used.
+On-device validation generated all 20 requested items through the live Codex
+adapter, then drew items 1–5 near the first test page's bottom and items 6–20 on
+the automatically inserted next page. Both pages retained full-size lettering;
+the first had a continuation arrow, the last a check, and the original pen
+profiles and lasso were restored. The two temporary pages were removed afterward.
+This exercises model-to-pen pagination; the combined physical four-finger gesture
+and multi-page overflow sequence still needs routine user testing. The current
+suite has 38 Python bridge/service tests and 38 Rust library tests.
 Service tests cover adopting a running request, reconnecting without restarting
 the listener, recovering a rebooted tablet, preserving credentials, stopping
 autostart, credential migration, and port reuse after a bridge reload. Recovery checks do not capture the screen, submit questions, or replay previous requests.

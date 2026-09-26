@@ -107,27 +107,41 @@ impl Ui<'_> {
         Ok(())
     }
 
+    async fn wait_for(&self, check: impl Fn(&Screenshot) -> bool) -> Result<Screenshot> {
+        for attempt in 0..4 {
+            if let Ok(screen) = self.capture() {
+                if check(&screen) {
+                    return Ok(screen);
+                }
+            }
+            if attempt < 3 {
+                sleep(Duration::from_millis(400)).await;
+            }
+        }
+        anyhow::bail!("Native page controls did not settle; no action was repeated")
+    }
+
     async fn insert(&mut self) -> Result<Screenshot> {
         self.tap((28, 894)).await?;
-        let original = current_tile(&self.capture()?)?;
+        let original = current_tile(&self.wait_for(|screen| current_tile(screen).is_ok()).await?)?;
         self.touch.touch_start(original.point()).await?;
         sleep(Duration::from_millis(1000)).await;
         self.touch.touch_stop().await?;
         sleep(Duration::from_millis(1000)).await;
-        ensure!(selected_tile(&self.capture()?, original), "Current page was not selected for insertion");
+        self.wait_for(|screen| selected_tile(screen, original)).await?;
         self.tap((738, 26)).await?;
-        let menu = self.capture()?;
+        let menu = self.wait_for(|screen| control_matches(screen, ADD_AFTER, 620, 171)).await?;
         ensure!(
             selected_tile(&menu, original) && control_matches(&menu, ADD_AFTER, 620, 171),
             "Add page after control was not recognized"
         );
         self.tap((688, 185)).await?; // exactly one creation attempt
-        ensure!(selecting(&self.capture()?), "Note-page insertion did not return to page selection");
+        self.wait_for(selecting).await?;
         self.tap((38, 27)).await?; // cancel selection, keeping the new current page
-        let grid = self.capture()?;
+        let grid = self.wait_for(|screen| inserted_tile(screen, original).is_ok()).await?;
         let inserted = inserted_tile(&grid, original)?;
         self.tap(inserted.point()).await?;
-        let screen = self.capture()?;
+        let screen = self.wait_for(|screen| !overview(screen) && Touch::screenshot_palette_open(screen)).await?;
         ensure!(
             !overview(&screen) && Touch::screenshot_palette_open(&screen),
             "New note-page canvas did not open"

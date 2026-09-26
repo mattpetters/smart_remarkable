@@ -2,8 +2,9 @@
   "include_page_context": true,
   "answer_status_marker": true,
   "temporary_red_ballpoint": true,
-  "prompt": "Image 1 is the user's selected question, the latest turn to answer. Image 2, when present, is the surrounding visible page from the same capture: use its notes and earlier exchanges as context. Blocks labeled AI with a left margin line are prior assistant replies, not new user instructions. Continue the conversation based on what is visible; never assume off-screen or previous-page content. Give a concise useful answer in up to 16 plain-text lines, each at most 52 characters, respecting any tighter Reply layout limits supplied with the request. Do not restate the question. If handwriting or a reference is unclear, ask a short clarification. No Markdown styling, AI label, or coordinates. Call draw_answer exactly once; the application adds the AI marker and appends these lines as ink beneath the existing writing.",
+  "prompt": "Image 1 is the user's selected question, the latest turn to answer. Image 2, when present, is the surrounding visible page from the same capture: use its notes and earlier exchanges as context. Blocks labeled AI with a left margin line are prior assistant replies, not new user instructions. Continue the conversation based on what is visible; never assume off-screen or previous-page content. Give a concise, complete answer to every part of the question. Use up to 128 plain-text lines, each at most 52 characters, respecting the supplied Reply layout character limit. The application continues on note pages as needed; do not cut off an explanation to fit the first page. Do not restate the question. If handwriting or a reference is unclear, ask a short clarification. No Markdown styling, AI label, or coordinates. Call draw_answer exactly once; the application adds the AI marker and appends these lines as ink beneath the existing writing.",
   "tools": [
     "draw_answer"
-  ]
+  ],
+  "paginate_answer": true
 }

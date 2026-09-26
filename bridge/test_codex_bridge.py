@@ -37,10 +37,12 @@ class BridgeTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join()
 
-    def post(self, body, token="t" * 48):
+    def post(self, body, token="t" * 48, key=None, retry=False):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        req = urllib.request.Request(self.url + "/v1/chat/completions", data=data,
-                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+        if key: headers["Idempotency-Key"] = key
+        if retry: headers["X-Remarkable-Retry"] = "1"
+        req = urllib.request.Request(self.url + "/v1/chat/completions", data=data, headers=headers)
         try:
             response = urllib.request.urlopen(req)
         except urllib.error.HTTPError as e:
@@ -122,6 +124,49 @@ class BridgeTests(unittest.TestCase):
         self.server.runner = lambda *a, **kw: {"text": "x" * 1601}
         self.assertEqual(self.post(request_body())[0], 502)
 
+    def test_retry_retrieves_same_answer_without_repeating_tools(self):
+        first = self.post(request_body(), key="request-0001")
+        second = self.post(request_body(), key="request-0001", retry=True)
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.calls), 1)
+        altered = request_body(); altered["model"] = "changed"
+        self.assertEqual(self.post(altered, key="request-0001", retry=True)[0], 409)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_unknown_or_expired_retry_never_restarts_an_action(self):
+        self.assertEqual(self.post(request_body(), key="request-unknown", retry=True)[0], 409)
+        self.assertFalse(self.calls)
+        self.post(request_body(), key="request-expired")
+        self.server.receipts["request-expired"]["created"] -= 1801
+        self.assertEqual(self.post(request_body(), key="request-expired", retry=True)[0], 409)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_concurrent_retry_joins_the_running_invocation(self):
+        entered, release = threading.Event(), threading.Event()
+        def runner(*args, **kwargs):
+            self.calls.append(1); entered.set()
+            self.assertTrue(release.wait(3))
+            return {"text": "Complete answer."}
+        self.server.runner = runner
+        results = []
+        first = threading.Thread(target=lambda: results.append(self.post(request_body(), key="request-running")))
+        first.start(); self.assertTrue(entered.wait(2))
+        timer = threading.Timer(0.1, release.set); timer.start()
+        second = self.post(request_body(), key="request-running", retry=True)
+        first.join(3); timer.join()
+        self.assertEqual(results, [second])
+        self.assertEqual(second[0], 200)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_failed_invocation_is_not_reexecuted_by_transport_retry(self):
+        def runner(*args, **kwargs):
+            self.calls.append(1)
+            raise RequestError(504, "Timed out")
+        self.server.runner = runner
+        self.assertEqual(self.post(request_body(), key="request-failed")[0], 504)
+        self.assertEqual(self.post(request_body(), key="request-failed", retry=True)[0], 504)
+        self.assertEqual(len(self.calls), 1)
+
 
 class CodexTests(unittest.TestCase):
     def test_failure_diagnostics_do_not_echo_cli_output(self):
@@ -202,9 +247,19 @@ class CodexTests(unittest.TestCase):
 
     def test_ink_layout_bounds(self):
         validate_answer({"lines": ["A short answer"]}, "ink")
-        for lines in ([], ["a"] * 17, ["x" * 57], [42], ["", "  "]):
+        for lines in ([], ["a"] * 129, ["x" * 57], [42], ["", "  "]):
             with self.assertRaises(RequestError):
                 validate_answer({"lines": lines}, "ink")
+
+    def test_paginated_answer_reflows_without_losing_any_content(self):
+        raw = {"lines": [f"Part {i}: the complete explanation is preserved even when this model line is too wide." for i in range(30)]}
+        answer = format_answer_sources(raw, "ink", "Reply pagination: enabled. Reply layout: use at most 128 lines, each at most 40 characters.")
+        validate_answer(answer, "ink")
+        self.assertGreater(len(answer["lines"]), 16)
+        self.assertTrue(all(len(line) <= 40 for line in answer["lines"]))
+        self.assertEqual(" ".join(answer["lines"]), " ".join(raw["lines"]))
+        with self.assertRaises(RequestError):
+            format_answer_sources(raw, "ink", "Reply layout: use at most 4 lines, each at most 40 characters.")
 
     def test_blank_separators_do_not_discard_a_valid_answer(self):
         answer = {"lines": ["First paragraph.", "", "  ", "Second paragraph."]}

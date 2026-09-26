@@ -11,6 +11,7 @@ use crate::util::fit_answer_lines;
 pub enum AnswerStatus {
     Pending,
     Complete,
+    Continued,
     Failed,
 }
 
@@ -38,6 +39,18 @@ pub fn status_svg(rect: Rect, status: AnswerStatus) -> Result<String> {
             y + 9,
             x + 10,
             y + 2
+        ),
+        AnswerStatus::Continued => format!(
+            r#"<path d="M {} {} H {} M {} {} L {} {} L {} {}" fill="none" stroke="black" stroke-width="1.8"/>"#,
+            x + 2,
+            y + 6,
+            x + 10,
+            x + 6,
+            y + 2,
+            x + 10,
+            y + 6,
+            x + 6,
+            y + 10
         ),
         AnswerStatus::Failed => format!(
             r#"<path d="M {} {} L {} {} M {} {} L {} {}" fill="none" stroke="black" stroke-width="1.8"/>"#,

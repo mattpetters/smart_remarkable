@@ -395,6 +395,7 @@ pub async fn processing_task(
     input_image_slot: Arc<Mutex<Option<String>>>,
     pen: Arc<Mutex<Pen>>,
     answer_marker_slot: Arc<Mutex<Option<Rect>>>,
+    answer_delivery_result: crate::answer_delivery::DeliveryResult,
     trigger_source: TriggerSource,
 ) -> Result<()> {
     info!("Processing task: starting");
@@ -428,6 +429,8 @@ pub async fn processing_task(
     let include_page_context = prompt_general_json["include_page_context"].as_bool().unwrap_or(false);
     let show_answer_status = prompt_general_json["answer_status_marker"].as_bool().unwrap_or(false);
     let temporary_red_ballpoint = prompt_general_json["temporary_red_ballpoint"].as_bool().unwrap_or(false);
+    let paginate = prompt_general_json["paginate_answer"].as_bool().unwrap_or(false);
+    if let Ok(mut result) = answer_delivery_result.lock() { *result = None; }
 
     // Take screenshot
     let screenshot_path = config.save_screenshot.clone();
@@ -566,9 +569,12 @@ pub async fn processing_task(
         }
         if show_answer_status {
             if let Some((_, rect)) = selection {
-                let max_lines = ((rect.h - 34) / 31).clamp(1, 16);
+                let max_lines = if paginate { 128 } else { ((rect.h - 34) / 31).clamp(1, 16) };
                 let max_chars = (((rect.w - 28) as f32 / 13.2).floor() as i32).clamp(12, 52);
-                prompt.push_str(&format!("\nReply layout: use at most {max_lines} lines, each at most {max_chars} characters. Keep the answer concise, but include useful detail that fits."));
+                prompt.push_str(&format!("\nReply layout: use at most {max_lines} lines, each at most {max_chars} characters. Answer all parts of the question concisely."));
+                if paginate {
+                    prompt.push_str("\nReply pagination: additional note pages are available. Complete the answer; the application handles page breaks at the original font size.");
+                }
             }
         }
 
@@ -608,12 +614,35 @@ pub async fn processing_task(
 
         // Execute LLM with proper error handling
         info!("Processing task: calling LLM");
-        let execution_result = engine_guard.execute(&cancellation, status_callback).await;
+        let mut execution_result = engine_guard.execute(&cancellation, status_callback).await;
+        let inference_failed = execution_result.is_err();
+        if paginate && !config.no_draw && !config.is_test_mode() {
+            let delivery = answer_delivery_result.lock().ok().and_then(|mut result| result.take());
+            if execution_result.is_ok() {
+                execution_result = match delivery {
+                    Some(Ok(())) => Ok(()),
+                    Some(Err(error)) => Err(anyhow::anyhow!("Answer delivery incomplete: {error}")),
+                    None => Err(anyhow::anyhow!("No complete answer was drawn")),
+                };
+            }
+        }
 
         // A successful draw_answer consumes this slot and checks the box. An API
         // error or response without a rendered answer leaves it pending: cross it.
         let pending = answer_marker_slot.lock().ok().and_then(|mut slot| slot.take());
         if let Some(rect) = pending {
+            if inference_failed && paginate && use_red_pen && !cancellation.should_cancel() {
+                // Inference failed before any answer lines were drawn. This
+                // known empty answer area can show a readable failure notice.
+                let width = (((rect.w - 28) as f32 / 13.2).floor() as usize).clamp(12, 52);
+                if let Ok(lines) = crate::answer_delivery::wrap_lines(&["No reply received.".into(), "Please try again.".into()], width) {
+                    if let Ok(fragments) = crate::answer_ui::answer_svgs(&lines, rect) {
+                        for svg in fragments {
+                            let _ = tokio::task::block_in_place(|| pen.lock().map_err(|_| anyhow::anyhow!("Pen lock unavailable"))?.draw_svg_centerline(&svg));
+                        }
+                    }
+                }
+            }
             if let Err(error) = draw_status(Arc::clone(&pen), rect, AnswerStatus::Failed, use_red_pen).await {
                 info!("Could not update failed request marker: {}", error);
             }
