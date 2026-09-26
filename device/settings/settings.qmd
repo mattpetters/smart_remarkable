@@ -1,0 +1,14 @@
+; Notebook assistant panel. Document-view insertion target for firmware 3.27.
+; Requires XOVI qt-resource-rebuilder with a hashtable for the current firmware.
+AFFECT [[17298303916558156758]]
+    TRAVERSE [[254504370080162629]]
+        LOCATE BEFORE ALL
+        INSERT {
+            Loader {
+                anchors.fill: parent
+                z: 1000000
+                source: "file:///home/root/smart-remarkable/Settings.qml"
+            }
+        }
+    END TRAVERSE
+END AFFECT

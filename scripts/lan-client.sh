@@ -15,9 +15,10 @@ case "$action" in
     test -x "$repo/target/aarch64-unknown-linux-gnu/release/smart_remarkable"
     # Stage before replacing executables so deploy cannot truncate a running binary.
     tar -czf - -C "$repo/target/aarch64-unknown-linux-gnu/release" smart_remarkable capture \
-      -C "$repo/prompts" selection_concise.json selection_concise_ink.json | \
+      -C "$repo/prompts" selection_concise.json selection_concise_ink.json \
+      -C "$repo/device/settings" Settings.qml activate.sh | \
       ssh -o BatchMode=yes "$device_host" \
-        "mkdir -p $remote/incoming && tar -xzf - -C $remote/incoming && chmod 700 $remote/incoming/smart_remarkable $remote/incoming/capture && mv $remote/incoming/smart_remarkable $remote/smart_remarkable && mv $remote/incoming/capture $remote/capture && mv $remote/incoming/selection_concise.json $remote/selection_concise.json && mv $remote/incoming/selection_concise_ink.json $remote/selection_concise_ink.json"
+        "mkdir -p $remote/incoming && tar -xzf - -C $remote/incoming && chmod 700 $remote/incoming/smart_remarkable $remote/incoming/capture && mv $remote/incoming/smart_remarkable $remote/smart_remarkable && mv $remote/incoming/capture $remote/capture && mv $remote/incoming/selection_concise.json $remote/selection_concise.json && mv $remote/incoming/selection_concise_ink.json $remote/selection_concise_ink.json && mv $remote/incoming/Settings.qml $remote/Settings.qml && mv $remote/incoming/activate.sh $remote/settings-ui.sh && chmod 700 $remote/settings-ui.sh"
     ;;
   start|stop|status|install-autostart|uninstall-autostart)
     exec python3 "$repo/bridge/lan_service.py" "$action"

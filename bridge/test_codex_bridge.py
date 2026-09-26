@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import threading
+import tempfile
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -49,6 +50,38 @@ class BridgeTests(unittest.TestCase):
             response = e
         with response:
             return response.status, json.load(response)
+
+    def test_backend_preferences_route_locally_without_codex_fallback(self):
+        body = request_body()
+        body["remarkable_settings"] = {"backend": "hermes"}
+        self.assertEqual(self.post(body)[0], 503)
+        self.assertFalse(self.calls)
+        body["remarkable_settings"] = {"backend": "unknown"}
+        self.assertEqual(self.post(body)[0], 400)
+        self.assertFalse(self.calls)
+
+    def test_hermes_result_is_cached_under_the_same_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "backends.json"
+            config.write_text(json.dumps({"hermes": {"model": "local-vision"}}))
+            self.server.backend_config = config
+            body = request_body()
+            body["remarkable_settings"] = {"backend": "hermes"}
+            with patch("hermes_backend.run_hermes", return_value={"text": "Local answer."}) as runner:
+                first = self.post(body, key="hermes-request")
+                second = self.post(body, key="hermes-request", retry=True)
+            self.assertEqual(first, second)
+            self.assertEqual(first[0], 200)
+            runner.assert_called_once()
+            self.assertFalse(self.calls)
+
+    def test_context_preference_removes_page_before_runner(self):
+        body = request_body()
+        body["messages"][0]["content"].append({"type": "image_url", "image_url": {"url": PNG_PREFIX + base64.b64encode(PAGE).decode()}})
+        body["remarkable_settings"] = {"page_context": False, "reply_length": "detailed"}
+        self.assertEqual(self.post(body)[0], 200)
+        self.assertEqual(self.calls[-1][1], [PNG])
+        self.assertIn("Include useful explanation and examples", self.calls[-1][0])
 
     def test_selection_round_trip(self):
         status, body = self.post(request_body())

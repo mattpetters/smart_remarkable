@@ -28,6 +28,18 @@ class AvailabilityTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
         self.service = Service(repo=self.root / "r", home=self.root / "h")
 
+    def test_overlay_recovery_failure_does_not_start_listener(self):
+        commands = []
+        def ssh(command, **kwargs):
+            commands.append(command)
+            if command == f"systemctl is-active {UNIT}": return result("inactive", 3)
+            if "settings-ui.sh restore" in command: return result(code=1)
+            return result()
+        with patch.object(self.service, "ssh", side_effect=ssh):
+            with self.assertRaisesRegex(Unavailable, "settings overlay"):
+                self.service.ensure_tablet("test-token")
+        self.assertFalse(any("systemd-run" in command or "cat >" in command for command in commands))
+
     def test_adopts_running_bridge_without_interrupting_request(self):
         with patch.object(self.service, "health", return_value={"status": "ready", "backend": "codex", "response_mode": "ink"}), \
              patch.object(self.service, "owned_bridge_pid", return_value=123), \

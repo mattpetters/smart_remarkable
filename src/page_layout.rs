@@ -102,7 +102,10 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
             let min_x = component.iter().map(|index| index % WIDTH).min().unwrap();
             let max_x = component.iter().map(|index| index % WIDTH).max().unwrap();
             let template_dot = component.len() <= 9 && last - top <= 2 && max_x - min_x <= 2;
-            if component.len() >= 6 && last - top >= 2 && !template_dot {
+            // Native continuous-page scrollbar: its narrow fixed gutter can
+            // extend to y=907 even when the writing ends near the page top.
+            let scrollbar = min_x >= 732 && max_x <= 742 && last - top >= 40;
+            if component.len() >= 6 && last - top >= 2 && !template_dot && !scrollbar {
                 for &index in &component {
                     cleaned[index] = true;
                 }
@@ -145,7 +148,10 @@ const MAX_SCROLLS: usize = 4;
 /// Register pre/post-scroll ink. A stalled swipe or changed page must never be
 /// treated as empty space. Ignore screen chrome and use template-filtered ink.
 fn upward_shift(before: &[bool], after: &[bool]) -> Option<i32> {
-    let points: Vec<_> = (450..PAGE_BOTTOM)
+    // A second pan can start with all useful handwriting above mid-screen.
+    // Restricting anchors to the bottom half then tracks only transient footer
+    // chrome and rejects a real pan (e.g. 302px followed by a 198px boundary pan).
+    let points: Vec<_> = (56..PAGE_BOTTOM)
         .flat_map(|y| (70..740).map(move |x| (x, y)))
         .filter(|&(x, y)| before[y * WIDTH + x])
         .collect();
@@ -406,6 +412,26 @@ mod tests {
         let rect = prepare_with(&mut ui, Rect { x: 100, y: 645, w: 200, h: 40 }).await.unwrap();
         assert_eq!(ui.scrolls, 1);
         assert!(rect.y >= 280 && rect.y <= 283);
+    }
+
+    #[test]
+    fn tracks_a_boundary_pan_after_handwriting_moves_above_mid_screen() {
+        let before = ink_mask(&viewport(302, &[653]));
+        let after = ink_mask(&viewport(500, &[653]));
+        assert!((197..=199).contains(&upward_shift(&before, &after).unwrap()));
+        assert_eq!(upward_shift(&before, &ink_mask(&viewport(0, &[]))), None);
+    }
+
+    #[test]
+    fn ignores_native_scrollbar_without_ignoring_nearby_writing() {
+        let mut img = image::RgbImage::from_pixel(768, 1024, image::Rgb([255; 3]));
+        for (left, right, top, bottom) in [(736, 740, 120, 908), (710, 716, 200, 220)] {
+            for y in top..bottom { for x in left..right { img.put_pixel(x, y, image::Rgb([0; 3])); } }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let mask = ink_mask(&Screenshot::from_png_data(bytes.into_inner()));
+        assert_eq!(bottom(&mask), Some(219));
     }
 
     fn screen(dotted: bool, writing_bottom: u32) -> Screenshot {

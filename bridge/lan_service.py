@@ -155,7 +155,8 @@ class Service:
             raise Unavailable("Port 8765 is occupied; leaving the other process alone") from None
         args = [sys.executable, str(self.repo / "bridge/codex_bridge.py"),
                 "--token-file", str(self.token), "--port", str(PORT),
-                "--mode", self.mode, "--codex", self.codex]
+                "--mode", self.mode, "--codex", self.codex,
+                "--backend-config", str(self.home / ".config/smart-remarkable/backends.json")]
         if self.model:
             args += ["--model", self.model]
         with (self.runtime / "bridge.log").open("a") as log:
@@ -200,6 +201,12 @@ class Service:
             return  # Adopt the existing listener without interrupting a request.
         if self.ssh("systemctl is-active --quiet xochitl").returncode:
             raise Unavailable("Waiting for the tablet notebook app to start")
+        # Restore the optional, previously enabled panel after a tablet reboot.
+        # The helper only loads it when the notebook binary's fingerprint still
+        # matches the tested firmware; a firmware change keeps the stock UI.
+        restore = self.ssh(f"if test -f {REMOTE}/settings-enabled && test -x {REMOTE}/settings-ui.sh; then {REMOTE}/settings-ui.sh restore; fi", timeout=30)
+        if restore.returncode:
+            raise Unavailable("Tablet settings overlay could not be restored")
         result = self.ssh(f"umask 077; mkdir -p {REMOTE}; cat > {REMOTE}/device.env",
                           input="OPENAI_API_KEY=" + token + "\n")
         if result.returncode:

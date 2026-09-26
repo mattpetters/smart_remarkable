@@ -226,6 +226,9 @@ async fn main() -> Result<()> {
         .init();
 
     setup_uinput()?;
+    if smart_remarkable::device::DeviceModel::detect() == smart_remarkable::device::DeviceModel::RemarkablePaperPro {
+        smart_remarkable::preferences::start();
+    }
 
     // Debug commands inject input directly; detect UI rotation first so
     // their coordinates land where the user sees them (best effort — only
@@ -701,6 +704,15 @@ async fn run_smart_remarkable_loop(
                     coordinator::TriggerEvent::UserTouch { source } => *source,
                     coordinator::TriggerEvent::WebTrigger => TriggerSource::Touch,
                 };
+
+                if trigger_source == TriggerSource::Settings {
+                    smart_remarkable::preferences::toggle();
+                    continue;
+                }
+                if smart_remarkable::preferences::is_open() {
+                    info!("Ignoring send while settings panel is open");
+                    continue;
+                }
 
                 // Update progress to indicate we're processing (not waiting for triggers)
                 // let _ = progress_tx.send(ProgressState::TakingScreenshot);

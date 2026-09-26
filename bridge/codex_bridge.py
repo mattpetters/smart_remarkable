@@ -256,15 +256,16 @@ def run_codex(prompt, images, *, mode, model, timeout, executable):
 class Bridge(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port, token, *, mode="text", model=None, timeout=180, executable="codex", runner=run_codex):
+    def __init__(self, port, token, *, mode="text", model=None, timeout=180, executable="codex", runner=run_codex, backend_config=None):
         super().__init__(("127.0.0.1", port), Handler)
         self.token, self.mode, self.model = token, mode, model
         self.timeout_seconds, self.executable, self.runner = timeout, executable, runner
         self.inference_lock = threading.Lock()
         self.receipts_lock = threading.Lock()
         self.receipts = {}
+        self.backend_config = backend_config
 
-    def answer(self, key, fingerprint, retry, prompt, images, tool):
+    def answer(self, key, fingerprint, retry, prompt, images, tool, backend="codex"):
         """Rejoin/retrieve the same invocation after a lost HTTP connection.
 
         Receipts contain only a body digest and bounded result, expire after 30
@@ -296,8 +297,16 @@ class Bridge(ThreadingHTTPServer):
                 raise RequestError(503, "The original answer is still being generated")
             return receipt["result"]
         try:
-            answer = self.runner(prompt, images, mode=self.mode, model=self.model,
-                                 timeout=self.timeout_seconds, executable=self.executable)
+            if backend == "hermes":
+                from hermes_backend import run_hermes
+                try:
+                    config = json.loads(Path(self.backend_config).read_text())["hermes"]
+                except (TypeError, OSError, ValueError, KeyError):
+                    raise RequestError(503, "Local Hermes backend is not configured") from None
+                answer = run_hermes(prompt, images, mode=self.mode, timeout=self.timeout_seconds, config=config)
+            else:
+                answer = self.runner(prompt, images, mode=self.mode, model=self.model,
+                                     timeout=self.timeout_seconds, executable=self.executable)
             answer = validate_answer(answer, self.mode)
             result = (200, {"id": "remarkable-" + str(time.time_ns()), "object": "chat.completion",
                             "created": int(time.time()), "model": "codex",
@@ -367,6 +376,22 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError):
                 raise RequestError(400, "Invalid JSON") from None
             prompt, images, names = selection_input(body)
+            preferences = body.get("remarkable_settings", {})
+            if (not isinstance(preferences, dict)
+                    or set(preferences) - {"backend", "reply_length", "page_context"}
+                    or preferences.get("backend", "codex") not in ("codex", "hermes")
+                    or preferences.get("reply_length", "balanced") not in ("brief", "balanced", "detailed")
+                    or not isinstance(preferences.get("page_context", True), bool)):
+                raise RequestError(400, "Invalid client preferences")
+            backend = preferences.get("backend", "codex")
+            length = preferences.get("reply_length", "balanced")
+            prompt += "\nAnswer preference: " + {
+                "brief": "Keep it short while answering every part.",
+                "balanced": "Use enough detail to be useful, without padding.",
+                "detailed": "Include useful explanation and examples; extra note pages are available.",
+            }[length]
+            if not preferences.get("page_context", True):
+                images = images[:1]
             tool = "draw_text" if server.mode == "text" else "draw_answer"
             if tool not in names:
                 raise RequestError(400, "Client did not register " + tool)
@@ -374,7 +399,7 @@ class Handler(BaseHTTPRequestHandler):
             if key is not None and not re.fullmatch(r"[A-Za-z0-9._-]{8,128}", key):
                 raise RequestError(400, "Invalid request ID")
             retry = self.headers.get("X-Remarkable-Retry") == "1"
-            status, result = server.answer(key, hashlib.sha256(raw).hexdigest(), retry, prompt, images, tool)
+            status, result = server.answer(key, hashlib.sha256(raw).hexdigest(), retry, prompt, images, tool, backend)
             self.reply(status, result)
             print(f"Selection finished in {time.monotonic() - started:.1f}s ({server.mode}), HTTP {status}", flush=True)
         except RequestError as e:
@@ -396,13 +421,15 @@ def main():
     parser.add_argument("--model", default=os.environ.get("REMARKABLE_CODEX_MODEL"))
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--codex", default="codex")
+    parser.add_argument("--backend-config", type=Path)
     args = parser.parse_args()
     if args.token_file.stat().st_mode & 0o077:
         parser.error("Token file must be private (chmod 600)")
     token = args.token_file.read_text().strip()
     if len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
         parser.error("Token must be at least 32 ASCII characters with no whitespace")
-    server = Bridge(args.port, token, mode=args.mode, model=args.model, timeout=args.timeout, executable=args.codex)
+    server = Bridge(args.port, token, mode=args.mode, model=args.model, timeout=args.timeout, executable=args.codex,
+                    backend_config=args.backend_config)
     print(f"Codex bridge listening on 127.0.0.1:{server.server_port} ({args.mode})", flush=True)
     try:
         server.serve_forever()

@@ -138,7 +138,7 @@ impl LLMEngine for OpenAI {
     }
 
     async fn execute(&mut self, cancellation: &SmartRemarkableCancellation, mut status_callback: Option<super::StatusCallback>) -> Result<()> {
-        let body = json!({
+        let mut body = json!({
             "model": self.model,
             "messages": [{
                 "role": "user",
@@ -148,6 +148,10 @@ impl LLMEngine for OpenAI {
             "tool_choice": "required",
             "parallel_tool_calls": false
         });
+
+        if self.model == "codex" {
+            body["remarkable_settings"] = serde_json::to_value(crate::preferences::load()?)?;
+        }
 
         debug!("Request: {}", body);
 

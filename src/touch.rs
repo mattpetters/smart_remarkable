@@ -75,6 +75,8 @@ pub enum TriggerSource {
     LlmButton,
     /// The injected "Draw" button beside xochitl's selection menu.
     DrawButton,
+    /// Five-finger tap opens device preferences without sending a question.
+    Settings,
 }
 
 // Event codes
@@ -264,7 +266,10 @@ impl Touch {
                                         let count = active_slots.iter().filter(|&&a| a).count();
                                         max_concurrent = max_concurrent.max(count);
                                         if count == 0 {
-                                            if max_concurrent >= 4 {
+                                            if max_concurrent == 5 {
+                                                return Ok(TriggerSource::Settings);
+                                            }
+                                            if max_concurrent == 4 {
                                                 debug!("Four-finger tap detected ({} concurrent contacts)", max_concurrent);
                                                 return Ok(TriggerSource::Touch);
                                             }

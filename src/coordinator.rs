@@ -426,7 +426,8 @@ pub async fn processing_task(
         .ok_or_else(|| anyhow::anyhow!("Prompt file '{}' missing required 'prompt' field", prompt_name))?
         .to_string();
 
-    let include_page_context = prompt_general_json["include_page_context"].as_bool().unwrap_or(false);
+    let include_page_context = prompt_general_json["include_page_context"].as_bool().unwrap_or(false)
+        && crate::preferences::load()?.page_context;
     let show_answer_status = prompt_general_json["answer_status_marker"].as_bool().unwrap_or(false);
     let temporary_red_ballpoint = prompt_general_json["temporary_red_ballpoint"].as_bool().unwrap_or(false);
     let paginate = prompt_general_json["paginate_answer"].as_bool().unwrap_or(false);

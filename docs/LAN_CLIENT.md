@@ -4,7 +4,8 @@ This fork adds an initial handwriting-to-Codex path. The existing tablet app
 captures a lassoed selection together with its surrounding visible page, a Python
 bridge on the Mac calls its authenticated Codex CLI, and the tablet traces the
 answer with its pen tool using compact IBM Plex Mono lettering. The response is ordinary movable, erasable ink.
-Codex inference still uses the cloud service associated with the CLI login.
+Codex inference uses the cloud service associated with the CLI login. An optional
+Hermes worker uses a local oMLX vision model; see [device settings](DEVICE_SETTINGS.md).
 No OpenAI API key is required for this route.
 
 ## First iteration
@@ -56,7 +57,8 @@ No OpenAI API key is required for this route.
   reverse forward bound to loopback on the tablet.
 - Global gesture listener: no notebook ID, title, template, or per-notebook setup.
 - Optional Mac login service restores the bridge, SSH tunnel, and tablet listener.
-- No XOVI installation or firmware changes.
+- The notebook-answer path does not require XOVI. The optional tappable settings
+  overlay uses XOVI/qt-resource-rebuilder and a separate five-finger gesture.
 - Paper Pro Move is not yet supported by the device geometry in this fork.
 
 Native editable text (`REMARKABLE_RESPONSE_MODE=text`) is experimental and not
@@ -246,6 +248,12 @@ then stopped before submission when a second pan could not be verified. That
 run exposed overly strict space requirements; regression coverage now includes
 stationary-boundary fallback, three-pixel template dots, and clipboard chrome.
 A complete scrolled answer still needs physical verification.
+Two later failures identified more specific causes: the native scrollbar was
+being counted as writing, and motion tracking only sampled the lower half of
+the screen. The scan now excludes the narrow scrollbar gutter and registers
+handwriting throughout the canvas, including a second pan after the first has
+moved the question above mid-screen. Regression tests cover both cases. Native
+page-insertion errors now name the failed UI stage for diagnosis.
 The trigger test sends a burst larger than the event queue and verifies that none
 is replayed after completion, while a subsequent idle trigger is accepted.
 Temporary-pen tests cover generic selected rows, hidden toolbars, separate pen
@@ -274,7 +282,7 @@ the first had a continuation arrow, the last a check, and the original pen
 profiles and lasso were restored. The two temporary pages were removed afterward.
 This exercises model-to-pen pagination; the combined physical four-finger gesture
 and multi-page overflow sequence still needs routine user testing. The current
-suite has 38 Python bridge/service tests and 38 Rust library tests.
+suite has 45 Python bridge/service tests and 41 Rust library tests.
 Service tests cover adopting a running request, reconnecting without restarting
 the listener, recovering a rebooted tablet, preserving credentials, stopping
 autostart, credential migration, and port reuse after a bridge reload. Recovery checks do not capture the screen, submit questions, or replay previous requests.

@@ -1,0 +1,8 @@
+{
+  "hermes": {
+    "agent_path": "~/.hermes/hermes-agent",
+    "model": "YOUR_LOCAL_VISION_MODEL",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "omlx_settings": "~/.omlx/settings.json"
+  }
+}
