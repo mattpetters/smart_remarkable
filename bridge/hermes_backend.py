@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from urllib.parse import urlsplit
+from agent_process import run_agent
 from illustrations import DRAWING_INSTRUCTIONS
 
 
@@ -29,7 +30,7 @@ def run_hermes(prompt, images, *, mode, timeout, config):
     if (not (root / "run_agent.py").is_file() or not executable.is_file() or not model
             or parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1")
             or parsed.username or parsed.password):
-        raise RequestError(503, "Local Hermes backend is not configured")
+        raise RequestError(503, "Local Hermes backend is not configured", safe_to_fallback=True)
     instructions = (
         "Answer a handwritten selection from a reMarkable notebook. Image 1 is the latest question. "
         "Image 2, if provided, is the surrounding visible page: use its handwriting and prior AI replies "
@@ -70,25 +71,31 @@ def run_hermes(prompt, images, *, mode, timeout, config):
         content += [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}
                     for png in images]
         request, output = temp / "request.json", temp / "answer.json"
+        audit = temp / "tool-audit"
+        def safe():
+            return audit.exists() and audit.read_text() == "read-only"
         request.write_text(json.dumps({"content": content, "instructions": instructions, "model": model,
                                       "base_url": base_url, "timeout": timeout,
-                                      "omlx_settings": config.get("omlx_settings")}))
+                                      "audit_path": str(audit), "omlx_settings": config.get("omlx_settings")}))
         env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "TMPDIR", "SHELL", "USER")}
         env.update(HERMES_HOME=str(home), HERMES_YOLO="1", PYTHONUNBUFFERED="1")
         try:
-            result = subprocess.run([str(executable), str(Path(__file__).with_name("hermes_worker.py")),
+            result = run_agent([str(executable), str(Path(__file__).with_name("hermes_worker.py")),
                                      str(request), str(output), str(root)],
-                                    cwd=temp, env=env, capture_output=True, timeout=timeout)
+                                    cwd=temp, env=env, text=False, timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise RequestError(504, "Local Hermes timed out") from None
+            raise RequestError(504, "Local Hermes timed out", safe_to_fallback=safe()) from None
         except OSError:
-            raise RequestError(503, "Local Hermes executable is unavailable") from None
+            raise RequestError(503, "Local Hermes executable is unavailable", safe_to_fallback=True) from None
         if result.returncode or not output.exists():
             # Worker logs can contain notebook contents. Return a fixed category.
-            raise RequestError(502, "Local Hermes failed; check oMLX and the selected vision model")
+            raise RequestError(502, "Local Hermes failed; check oMLX and the selected vision model", safe_to_fallback=safe())
         try:
             text = json.loads(output.read_text())["text"].strip()
             answer = parse_answer(text, mode)
             return validate_answer(format_answer_sources(answer, mode, prompt), mode)
+        except RequestError as error:
+            error.safe_to_fallback = safe()
+            raise
         except (ValueError, KeyError, TypeError):
-            raise RequestError(502, "Local Hermes returned an invalid answer") from None
+            raise RequestError(502, "Local Hermes returned an invalid answer", safe_to_fallback=safe()) from None

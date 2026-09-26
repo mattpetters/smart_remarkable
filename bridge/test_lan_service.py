@@ -28,6 +28,20 @@ class AvailabilityTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
         self.service = Service(repo=self.root / "r", home=self.root / "h")
 
+    def test_reconnect_tries_alternate_address_without_restarting_listener(self):
+        self.service.hosts = ["tablet-tailnet", "tablet-lan"]
+        attempted=[]
+        def connect():
+            attempted.append(self.service.host)
+            if self.service.host == "tablet-tailnet": raise Unavailable("offline")
+        with patch.object(self.service, "tunnel_alive", return_value=False), patch.object(self.service, "ensure_tunnel_at_host", side_effect=connect):
+            self.service.ensure_tunnel()
+        self.assertEqual(attempted, ["tablet-tailnet", "tablet-lan"])
+        attempted.clear()
+        with patch.object(self.service, "tunnel_alive", return_value=True), patch.object(self.service, "ensure_tunnel_at_host", side_effect=connect):
+            self.service.ensure_tunnel()
+        self.assertEqual(attempted, ["tablet-lan"])
+
     def test_overlay_recovery_failure_does_not_start_listener(self):
         commands = []
         def ssh(command, **kwargs):

@@ -26,10 +26,24 @@ def main():
     if request.get("omlx_settings"):
         data = json.loads(Path(request["omlx_settings"]).expanduser().read_text())
         key = data.get("auth", {}).get("api_key") or key
+    audit = Path(request["audit_path"])
+    audit.write_text("read-only")
+    def tool_start(call_id, name, args):
+        if name not in ("web_search", "web_extract"):
+            try:
+                with audit.open("w") as handle:
+                    handle.write("actions-possible")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except OSError:
+                # Hermes swallows callback exceptions. Exit before the tool
+                # executes if we cannot persist the conservative action guard.
+                os._exit(70)
     agent = AIAgent(
         model=request["model"], base_url=request["base_url"], api_key=key,
         provider="custom", api_mode="chat_completions",
         max_iterations=12, max_tokens=4096, run_budget_seconds=request["timeout"] - 10,
+        tool_start_callback=tool_start,
         enabled_toolsets=["web", "terminal", "file"],
         skip_context_files=True, skip_memory=True, skip_background_review=True,
         save_trajectories=False, quiet_mode=True,

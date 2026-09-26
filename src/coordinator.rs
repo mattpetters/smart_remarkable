@@ -595,6 +595,7 @@ pub async fn processing_task(
         info!("Request context: selected image, visible page included={}", page_context.is_some());
 
         if show_answer_status && !config.no_draw && !config.is_test_mode() {
+            crate::preferences::prepare_label().await;
             if let Some((_, rect)) = selection {
                 match draw_status(Arc::clone(&pen), rect, AnswerStatus::Pending, use_red_pen).await {
                     Ok(()) => {
@@ -637,7 +638,16 @@ pub async fn processing_task(
                 // Inference failed before any answer lines were drawn. This
                 // known empty answer area can show a readable failure notice.
                 let width = (((rect.w - 28) as f32 / 13.2).floor() as usize).clamp(12, 52);
-                if let Ok(lines) = crate::answer_delivery::wrap_lines(&["No reply received.".into(), "Please try again.".into()], width) {
+                let diagnostic = execution_result.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default();
+                let notice = if diagnostic.contains("bridge") || diagnostic.contains("Connection") || diagnostic.contains("transport") {
+                    ["Mac connection unavailable.", "Reconnect, then try again."]
+                } else if diagnostic.contains("possible tool actions") {
+                    ["A tool may have already run.", "Stopped to avoid repeating it."]
+                } else if diagnostic.contains("All configured backends") {
+                    ["All selected backends failed.", "Please check the Mac services."]
+                } else { ["The backend did not finish.", "Please try again."] };
+                crate::preferences::set_phase(notice[0]);
+                if let Ok(lines) = crate::answer_delivery::wrap_lines(&notice.map(str::to_string), width) {
                     if let Ok(fragments) = crate::answer_ui::answer_svgs(&lines, rect) {
                         for svg in fragments {
                             let _ = tokio::task::block_in_place(|| pen.lock().map_err(|_| anyhow::anyhow!("Pen lock unavailable"))?.draw_svg_centerline(&svg));

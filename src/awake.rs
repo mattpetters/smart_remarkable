@@ -19,10 +19,12 @@ impl RequestWakeLock {
         let name = format!("smart_remarkable_request_{}", std::process::id());
         // Kernel timeout is in nanoseconds. A crash must not leave an indefinite
         // wake lock; ordinary completion/error/cancellation releases it sooner.
-        std::fs::write(root.join("wake_lock"), format!("{name} 600000000000\n"))
-            .context("Could not keep the tablet awake for this request")?;
-        log::info!("Request wake lock acquired (10-minute maximum)");
-        Ok(Self { name, unlock: root.join("wake_unlock") })
+        std::fs::write(root.join("wake_lock"), format!("{name} 900000000000\n")).context("Could not keep the tablet awake for this request")?;
+        log::info!("Request wake lock acquired (15-minute maximum)");
+        Ok(Self {
+            name,
+            unlock: root.join("wake_unlock"),
+        })
     }
 }
 
@@ -46,7 +48,7 @@ mod tests {
         let run = || -> Result<()> {
             let _guard = RequestWakeLock::at(&root)?;
             let value = std::fs::read_to_string(root.join("wake_lock"))?;
-            assert!(value.ends_with(" 600000000000\n"));
+            assert!(value.ends_with(" 900000000000\n"));
             anyhow::bail!("simulated request failure")
         };
         assert!(run().is_err());

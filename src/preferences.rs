@@ -14,12 +14,16 @@ pub struct Preferences {
     pub backend: Backend,
     pub reply_length: ReplyLength,
     pub page_context: bool,
+    pub auto_fallback: bool,
+    pub backend_order: Vec<Backend>,
+    pub models: std::collections::BTreeMap<String, String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
     Codex,
     Hermes,
+    Claude,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -34,7 +38,38 @@ impl Default for Preferences {
             backend: Backend::Codex,
             reply_length: ReplyLength::Balanced,
             page_context: true,
+            auto_fallback: true,
+            backend_order: vec![Backend::Codex, Backend::Hermes, Backend::Claude],
+            models: Default::default(),
         }
+    }
+}
+impl Backend {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Hermes => "hermes",
+            Self::Claude => "claude",
+        }
+    }
+}
+impl Preferences {
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(!self.backend_order.is_empty() && self.backend_order.len() <= 3, "Invalid fallback order");
+        for (i, backend) in self.backend_order.iter().enumerate() {
+            anyhow::ensure!(!self.backend_order[..i].contains(backend), "Duplicate fallback provider");
+        }
+        for (provider, model) in &self.models {
+            anyhow::ensure!(
+                ["codex", "hermes", "claude"].contains(&provider.as_str())
+                    && !model.is_empty()
+                    && model.len() <= 96
+                    && model.chars().all(|c| c.is_ascii_alphanumeric() || "._/+:-".contains(c))
+                    && model.chars().next().unwrap().is_ascii_alphanumeric(),
+                "Invalid model"
+            );
+        }
+        Ok(())
     }
 }
 fn path() -> PathBuf {
@@ -44,12 +79,17 @@ fn path() -> PathBuf {
 }
 pub fn load() -> Result<Preferences> {
     match std::fs::read(path()) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Ok(bytes) => {
+            let prefs: Preferences = serde_json::from_slice(&bytes)?;
+            prefs.validate()?;
+            Ok(prefs)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Preferences::default()),
         Err(e) => Err(e.into()),
     }
 }
 fn save_to(path: &std::path::Path, prefs: &Preferences) -> Result<()> {
+    prefs.validate()?;
     let temporary = path.with_extension("json.new");
     std::fs::write(&temporary, serde_json::to_vec_pretty(prefs)?)?;
     std::fs::rename(temporary, path)?;
@@ -61,12 +101,18 @@ struct State {
     busy: bool,
     send: bool,
     dispatched: bool,
+    label: String,
+    phase: String,
+    catalog: Option<serde_json::Value>,
 }
 static STATE: Mutex<State> = Mutex::new(State {
     opened: None,
     busy: false,
     send: false,
     dispatched: false,
+    label: String::new(),
+    phase: String::new(),
+    catalog: None,
 });
 impl State {
     fn open(&self) -> bool {
@@ -78,6 +124,62 @@ impl State {
         }
         self.send = true;
         true
+    }
+}
+pub fn answer_label() -> String {
+    STATE.lock().map(|s| s.label.clone()).unwrap_or_default()
+}
+pub fn set_provider(provider: &str, model: &str) {
+    // Keep provider metadata bounded and safe for SVG / device status output.
+    if ["codex", "claude", "hermes"].contains(&provider) && model.len() <= 96 && model.chars().all(|c| c.is_ascii_alphanumeric() || "._/+:-".contains(c)) {
+        if let Ok(mut s) = STATE.lock() {
+            s.label = format!("{provider} / {model}");
+            s.phase = "Thinking".into();
+        }
+    }
+}
+pub fn set_phase(phase: &str) {
+    if let Ok(mut s) = STATE.lock() {
+        s.phase = phase.to_string();
+    }
+}
+pub async fn refresh_catalog() {
+    let Ok(token) = std::env::var("OPENAI_API_KEY") else {
+        return;
+    };
+    let result = reqwest::Client::new()
+        .get("http://127.0.0.1:8765/backends")
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await;
+    if let Ok(response) = result {
+        if response.status().is_success() {
+            if let Ok(value) = response.json::<serde_json::Value>().await {
+                if let Ok(mut s) = STATE.lock() {
+                    s.catalog = Some(value);
+                }
+            }
+        }
+    }
+}
+pub async fn prepare_label() {
+    refresh_catalog().await;
+    if let Ok(prefs) = load() {
+        let provider = prefs.backend.name();
+        let model = prefs
+            .models
+            .get(provider)
+            .cloned()
+            .or_else(|| {
+                STATE
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.catalog.as_ref()?.get(provider)?.get("model")?.as_str().map(str::to_string))
+            })
+            .unwrap_or_else(|| "default".into());
+        set_provider(provider, &model);
+        set_phase("Connecting");
     }
 }
 pub fn is_open() -> bool {
@@ -116,6 +218,8 @@ pub fn begin_answer() -> bool {
                 false
             } else {
                 s.busy = true;
+                s.phase = "Connecting".into();
+                s.label.clear();
                 true
             }
         })
@@ -126,16 +230,23 @@ pub fn finish_answer() {
         s.busy = false;
         s.send = false;
         s.dispatched = false;
+        s.phase.clear();
     }
 }
 
 /// Loopback only. No credentials, shell commands, URLs or arbitrary paths can
 /// be configured here. Mutations require an open panel and a custom header.
 pub fn start() {
+    tokio::spawn(async {
+        loop {
+            refresh_catalog().await;
+            tokio::time::sleep(Duration::from_secs(15)).await;
+        }
+    });
     let get = warp::path("settings").and(warp::path::end()).and(warp::get()).map(|| match load() {
         Ok(prefs) => {
             let state = STATE.lock().unwrap();
-            warp::reply::json(&serde_json::json!({"open": state.open(), "busy": state.busy || state.send, "preferences": prefs})).into_response()
+            warp::reply::json(&serde_json::json!({"open": state.open(), "busy": state.busy || state.send, "preferences": prefs, "provider_label": state.label, "phase": state.phase, "catalog": state.catalog})).into_response()
         }
         Err(_) => warp::reply::with_status("Preferences unavailable", warp::http::StatusCode::INTERNAL_SERVER_ERROR).into_response(),
     });
@@ -215,6 +326,18 @@ mod tests {
         assert!(!state.request_send());
         state.opened = None;
         assert!(state.request_send());
+    }
+    #[test]
+    fn validates_provider_priority_and_model_names() {
+        let mut prefs = Preferences::default();
+        prefs.backend_order = vec![Backend::Claude, Backend::Hermes, Backend::Codex];
+        prefs.models.insert("claude".into(), "sonnet".into());
+        assert!(prefs.validate().is_ok());
+        prefs.backend_order.push(Backend::Claude);
+        assert!(prefs.validate().is_err());
+        prefs.backend_order = vec![Backend::Claude];
+        prefs.models.insert("claude".into(), "--unsafe".into());
+        assert!(prefs.validate().is_err());
     }
     #[test]
     fn validates_settings_and_round_trips_atomic_file() {

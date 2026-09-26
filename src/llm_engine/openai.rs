@@ -11,14 +11,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 async fn check_bridge(client: &reqwest::Client, base_url: &str) -> Result<()> {
-    let response = client.get(format!("{}/health", base_url.trim_end_matches('/')))
-        .timeout(Duration::from_secs(4)).send().await
+    let response = client
+        .get(format!("{}/health", base_url.trim_end_matches('/')))
+        .timeout(Duration::from_secs(4))
+        .send()
+        .await
         .map_err(|_| anyhow::anyhow!("Mac bridge is unreachable; check the connection and try again"))?;
     if !response.status().is_success() {
         anyhow::bail!("Mac bridge is not ready; try again after reconnecting");
     }
-    let health: json = response.json().await
-        .map_err(|_| anyhow::anyhow!("Mac bridge health response was invalid"))?;
+    let health: json = response.json().await.map_err(|_| anyhow::anyhow!("Mac bridge health response was invalid"))?;
     anyhow::ensure!(health["status"] == "ready", "Mac bridge is not ready");
     Ok(())
 }
@@ -43,7 +45,25 @@ async fn request_answer(client: &reqwest::Client, url: &str, api_key: &str, body
                 .header("Idempotency-Key", &id)
                 .header("X-Remarkable-Retry", if uncertain { "1" } else { "0" });
         }
-        let response = match request.send().await {
+        let sending = request.send();
+        tokio::pin!(sending);
+        let response = loop {
+            tokio::select! {
+                response = &mut sending => break response,
+                _ = tokio::time::sleep(Duration::from_secs(2)), if bridge => {
+                    let base = url.trim_end_matches("/v1/chat/completions");
+                    if let Ok(status) = client.get(format!("{base}/requests/{id}")).bearer_auth(api_key)
+                        .timeout(Duration::from_secs(2)).send().await {
+                        if let Ok(value) = status.json::<json>().await {
+                            if let (Some(provider), Some(model)) = (value["provider"].as_str(), value["model"].as_str()) {
+                                crate::preferences::set_provider(provider, model);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        let response = match response {
             Ok(response) => response,
             Err(error) => {
                 uncertain |= !error.is_connect();
@@ -62,6 +82,13 @@ async fn request_answer(client: &reqwest::Client, url: &str, api_key: &str, body
         };
         if !status.is_success() {
             last = format!("API Error: {status}");
+            if bridge {
+                if let Ok(body) = serde_json::from_str::<json>(&text) {
+                    if let Some(message) = body["error"]["message"].as_str() {
+                        last = message.chars().filter(|c| !c.is_control()).take(180).collect();
+                    }
+                }
+            }
             if !bridge || !matches!(status.as_u16(), 408 | 429 | 503) {
                 anyhow::bail!("{last}");
             }
@@ -178,7 +205,7 @@ impl LLMEngine for OpenAI {
         let request_future = async {
             let client = reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(210))
+                .timeout(Duration::from_secs(390))
                 .build()?;
             let bridge = self.model == "codex"
                 && reqwest::Url::parse(&self.base_url)
@@ -186,10 +213,19 @@ impl LLMEngine for OpenAI {
                     .and_then(|url| url.host_str().map(str::to_owned))
                     .is_some_and(|host| matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]"));
             if bridge {
-                check_bridge(&client, &self.base_url).await?;
+                for attempt in 0..4 {
+                    match check_bridge(&client, &self.base_url).await {
+                        Ok(()) => break,
+                        Err(error) if attempt == 3 => return Err(error),
+                        Err(_) => {
+                            crate::preferences::set_phase("Reconnecting");
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                        }
+                    }
+                }
             }
             tokio::time::timeout(
-                Duration::from_secs(240),
+                Duration::from_secs(420),
                 request_answer(&client, &format!("{}/v1/chat/completions", self.base_url), &self.api_key, &body, bridge),
             )
             .await
@@ -198,6 +234,13 @@ impl LLMEngine for OpenAI {
 
         let json: json = with_cancellation(request_future, cancellation).await?;
         debug!("Response: {}", json);
+        if let (Some(provider), Some(model)) = (json["remarkable_backend"]["provider"].as_str(), json["remarkable_backend"]["model"].as_str()) {
+            crate::preferences::set_provider(provider, model);
+            crate::preferences::set_phase("Writing");
+            // Let the transient QML thinking banner disappear before native
+            // ink delivery captures or pans the notebook.
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+        }
 
         // Notify that we're processing the response
         status_update!(status_callback, super::ModelExecutionStatus::ProcessingResponse);
@@ -214,7 +257,12 @@ impl LLMEngine for OpenAI {
             let function_input_raw = tool_call["function"]["arguments"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Answer is missing tool arguments"))?;
-            let function_input = serde_json::from_str::<json>(function_input_raw).map_err(|_| anyhow::anyhow!("Answer tool arguments are malformed"))?;
+            let mut function_input = serde_json::from_str::<json>(function_input_raw).map_err(|_| anyhow::anyhow!("Answer tool arguments are malformed"))?;
+            if json["remarkable_backend"]["attempts"].as_array().is_some_and(|a| !a.is_empty()) {
+                if let Some(lines) = function_input["lines"].as_array_mut() {
+                    lines.insert(0, json!(format!("Answered by {} (fallback).", crate::preferences::answer_label())));
+                }
+            }
             let tool = self.tools.iter_mut().find(|tool| tool.name == function_name);
 
             if let Some(tool) = tool {
@@ -259,7 +307,10 @@ mod transport_tests {
                 let mut buf = [0; 2048];
                 let n = stream.read(&mut buf).await.unwrap();
                 assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET /health "));
-                stream.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                stream
+                    .write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+                    .await
+                    .unwrap();
             });
             assert_eq!(check_bridge(&reqwest::Client::new(), &url).await.is_ok(), ready);
             server.await.unwrap();

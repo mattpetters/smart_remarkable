@@ -113,7 +113,7 @@ drawing. Document files are never modified directly.
 Recovery checks run every 15 seconds while healthy and every 30 seconds after a
 failure; connection timeouts can add delay. This is automatic recovery, not a
 guarantee of zero downtime. Each active request allows up to four HTTP attempts,
-with 1/2/4-second backoff and a 240-second total recovery deadline. The bridge
+with 1/2/4-second backoff and a 420-second total transport recovery deadline. The bridge
 retains up to 32 request receipts for 30 minutes in memory: a request digest and
 bounded answer or error, without input images. A duplicate ID joins or retrieves
 the original invocation; a missing receipt after a restart causes an explicit
@@ -329,7 +329,7 @@ and out-of-range coordinates.
    Full document context, including off-screen writing, requires document-aware
    capture beyond the current visible-page screenshot.
 3. Validate the XOVI selection-menu button on the actual firmware.
-4. Add adapters for Claude Code, pi, and Hermes with explicit session and
+4. Add adapters for pi and further providers with explicit session and
    action permissions. Add a configured direct-cloud fallback for requests made
    while the Mac is asleep or away, including visible backend/error state.
 5. Detect Paper Pro Move and implement its display, pen, touch, and layout
@@ -373,3 +373,12 @@ To preview the first illustration in a saved bridge answer without a tablet:
 ```sh
 cargo run --example preview_illustration -- answer.json output.svg output.png
 ```
+
+
+### Ordered provider recovery
+
+The bridge now supports Codex, local Hermes/oMLX, and Claude Code with explicit device-configured order and model choices. See [device settings](DEVICE_SETTINGS.md). Provider failover and transport reconnection are separate: no Mac backend can answer when the tablet cannot reach the Mac. Preflight allows a short reconnection window before reporting a connection failure. The active request wake lock has a 15-minute crash backstop and releases on completion, cancellation, or error.
+
+Automated checks cover ordered exhaustion, stopping after possible tool actions, process-group timeout cleanup, and cached receipts spanning the complete fallback chain. Synthetic image smoke tests exercised Claude Code and Hermes; a deliberately unavailable Codex and unconfigured Hermes successfully reached Claude. These checks do not establish long-term Wi-Fi or physical handwriting reliability.
+
+[Tailscale setup](TAILSCALE.md) supplies a stable private SSH address. Direct cloud fallback for an absent Mac remains unconfigured.

@@ -40,7 +40,7 @@ class HermesTests(unittest.TestCase):
                 self.assertNotIn('OPENAI_API_KEY', kwargs['env'])
                 Path(command[3]).write_text(json.dumps({'text': json.dumps({'lines':['One complete answer with a long source attribution.'], 'illustrations':[]})}))
                 return subprocess.CompletedProcess(command, 0, b'', b'')
-            with patch('hermes_backend.subprocess.run', side_effect=invoke):
+            with patch('hermes_backend.run_agent', side_effect=invoke):
                 result = run_hermes('Reply pagination: enabled. Reply layout: use at most 128 lines, each at most 20 characters.',
                                     [b'selection', b'page'], mode='ink', timeout=180, config=config)
             self.assertTrue(all(len(line) <= 20 for line in result['lines']))
@@ -48,7 +48,7 @@ class HermesTests(unittest.TestCase):
 
     def test_missing_or_remote_backend_never_falls_back_to_cloud(self):
         for config in ({}, {'agent_path': '/missing', 'model': 'test', 'base_url': 'https://example.com/v1'}):
-            with patch('hermes_backend.subprocess.run') as run:
+            with patch('hermes_backend.run_agent') as run:
                 with self.assertRaises(RequestError) as error:
                     run_hermes('', [b'image'], mode='ink', timeout=180, config=config)
                 self.assertEqual(error.exception.status, 503)

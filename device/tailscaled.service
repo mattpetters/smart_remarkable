@@ -1,0 +1,14 @@
+[Unit]
+Description=Tailscale for notebook assistant connectivity
+After=network.target
+RequiresMountsFor=/home/root/smart-remarkable/tailscale
+
+[Service]
+Type=simple
+UMask=0077
+ExecStart=/home/root/smart-remarkable/tailscale/tailscaled --state=/home/root/smart-remarkable/tailscale/tailscaled.state --socket=/run/smart-remarkable-tailscale.sock --tun=userspace-networking
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

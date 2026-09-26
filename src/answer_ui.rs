@@ -23,11 +23,15 @@ fn validate_rect(rect: Rect) -> Result<()> {
 
 pub fn status_svg(rect: Rect, status: AnswerStatus) -> Result<String> {
     validate_rect(rect)?;
+    let label = crate::preferences::answer_label();
+    let limit = ((rect.w - 62).max(0) as f32 / 8.4) as usize;
+    let label: String = label.chars().take(limit).collect();
+    let label = if label.is_empty() { String::new() } else { format!(" {label}") };
     let x = rect.x + 6;
     let y = rect.y + 4;
     let content = match status {
         AnswerStatus::Pending => format!(
-            r#"<rect x="{x}" y="{y}" width="12" height="12" fill="none" stroke="black" stroke-width="1.6"/><text x="{}" y="{}" font-family="IBM Plex Mono" font-size="14" fill="black">AI</text>"#,
+            r#"<rect x="{x}" y="{y}" width="12" height="12" fill="none" stroke="black" stroke-width="1.6"/><text x="{}" y="{}" font-family="IBM Plex Mono" font-size="14" fill="black">AI{label}</text>"#,
             x + 20,
             y + 13
         ),

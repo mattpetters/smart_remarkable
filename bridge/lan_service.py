@@ -38,6 +38,7 @@ class Service:
         self.plist = self.home / "Library/LaunchAgents" / (LABEL + ".plist")
         self.socket = self.runtime / "ssh.sock"
         self.host = os.environ.get("REMARKABLE_HOST", "rmpp-wifi")
+        self.hosts = list(dict.fromkeys([self.host] + [h for h in os.environ.get("REMARKABLE_FALLBACK_HOSTS", "").split(",") if h]))
         self.mode = os.environ.get("REMARKABLE_RESPONSE_MODE", "ink")
         self.model = os.environ.get("REMARKABLE_CODEX_MODEL", "")
         self.codex = os.environ.get("REMARKABLE_CODEX_BIN") or shutil.which("codex")
@@ -47,7 +48,7 @@ class Service:
         if self.mode not in ("ink", "text"):
             raise Unavailable("REMARKABLE_RESPONSE_MODE must be ink or text")
         # These paths enter SSH's remote shell and Unix-domain socket APIs.
-        if not self.host or self.host.startswith("-") or any(c.isspace() for c in self.host):
+        if any(not host or host.startswith("-") or any(c.isspace() for c in host) for host in self.hosts):
             raise Unavailable("REMARKABLE_HOST must be an SSH hostname or alias")
         if len(os.fsencode(self.socket)) >= 100:
             raise Unavailable("Repository path is too long for the SSH control socket")
@@ -188,6 +189,20 @@ class Service:
         return result.returncode == 0
 
     def ensure_tunnel(self):
+        # Keep a healthy connection; choose endpoints again only on reconnect.
+        # Every alias must identify the same tablet using its existing SSH key.
+        endpoints = [self.host] if self.tunnel_alive() else self.hosts
+        failure = None
+        for host in endpoints:
+            self.host = host
+            try:
+                self.ensure_tunnel_at_host()
+                return
+            except Unavailable as error:
+                failure = error
+        raise failure or Unavailable("No tablet SSH endpoint is configured")
+
+    def ensure_tunnel_at_host(self):
         if not self.tunnel_alive():
             command = ["ssh", "-M", "-S", str(self.socket), "-fNT",
                        "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
@@ -292,8 +307,10 @@ class Service:
             raise Unavailable("Codex CLI must be installed before enabling autostart")
         self.plist.parent.mkdir(parents=True, exist_ok=True)
         environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
-                       "REMARKABLE_HOST": self.host, "REMARKABLE_RESPONSE_MODE": self.mode,
+                       "REMARKABLE_HOST": self.hosts[0], "REMARKABLE_RESPONSE_MODE": self.mode,
                        "REMARKABLE_CODEX_BIN": self.codex}
+        if len(self.hosts) > 1:
+            environment["REMARKABLE_FALLBACK_HOSTS"] = ",".join(self.hosts[1:])
         if self.model:
             environment["REMARKABLE_CODEX_MODEL"] = self.model
         if os.environ.get("CODEX_HOME"):

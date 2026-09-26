@@ -15,7 +15,7 @@ const MAX_PAGES: usize = 12;
 
 pub fn wrap_lines(lines: &[String], width: usize) -> Result<Vec<String>> {
     ensure!(
-        width >= 12 && lines.iter().map(|s| s.chars().count()).sum::<usize>() <= 8192,
+        width >= 12 && lines.iter().map(|s| s.chars().count()).sum::<usize>() <= 8448,
         "Answer exceeds supported bounds"
     );
     let mut result = Vec::new();

@@ -234,7 +234,7 @@ class CodexTests(unittest.TestCase):
             output = Path(command[command.index("--output-last-message") + 1])
             output.write_text('{"lines":["Basil and mint."]}')
             return subprocess.CompletedProcess(command, 0)
-        with patch("codex_bridge.subprocess.run", side_effect=process):
+        with patch("codex_bridge.run_agent", side_effect=process):
             run_codex("Continue the visible conversation", [PNG, PAGE], mode="ink", model="test", timeout=12, executable="codex")
         self.assertTrue(all(not path.exists() for path in images))
 
@@ -257,7 +257,7 @@ class CodexTests(unittest.TestCase):
             output = Path(command[command.index("--output-last-message") + 1])
             output.write_text('{"text":"Four."}')
             return subprocess.CompletedProcess(command, 0)
-        with patch("codex_bridge.subprocess.run", side_effect=process):
+        with patch("codex_bridge.run_agent", side_effect=process):
             result = run_codex("Answer", [PNG], mode="text", model="test", timeout=12, executable="codex")
         self.assertEqual(result, {"text": "Four."})
 
@@ -288,7 +288,7 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(validate_answer(spaced, "ink"), {"lines": ["First.", "Second."]})
 
     def test_timeout_becomes_gateway_timeout(self):
-        with patch("codex_bridge.subprocess.run", side_effect=subprocess.TimeoutExpired("codex", 1)):
+        with patch("codex_bridge.run_agent", side_effect=subprocess.TimeoutExpired("codex", 1)):
             with self.assertRaises(RequestError) as raised:
                 run_codex("Answer", [PNG], mode="text", model=None, timeout=1, executable="codex")
         self.assertEqual(raised.exception.status, 504)

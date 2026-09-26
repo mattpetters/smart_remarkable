@@ -13,19 +13,46 @@ Rectangle {
     property string selectedBackend: "codex"
     property string selectedLength: "balanced"
     property bool pageContext: true
+    property bool autoFallback: true
+    property var backendOrder: ["codex", "hermes", "claude"]
+    property var selectedModels: ({})
+    property var catalog: ({})
+    property var inflight: null
+    property double requestStarted: 0
+    function reorder(index, offset) {
+        var order = backendOrder.slice()
+        var other = index + offset
+        if (other < 0 || other >= order.length) return
+        var old = order[index]; order[index] = order[other]; order[other] = old
+        backendOrder = order
+        selectedBackend = order[0]
+    }
+    function modelName(provider) {
+        return selectedModels[provider] || (catalog[provider] || {}).model || "default"
+    }
+    function nextModel(provider) {
+        var choices = (catalog[provider] || {}).models || []
+        if (choices.length < 2) return
+        var models = Object.assign({}, selectedModels)
+        models[provider] = choices[(choices.indexOf(modelName(provider)) + 1) % choices.length]
+        selectedModels = models
+    }
     property string message: ""
 
     function request(method, path, body, callback) {
         var xhr = new XMLHttpRequest()
+        inflight = xhr
+        requestStarted = Date.now()
         xhr.open(method, "http://127.0.0.1:8766/settings" + path)
         xhr.setRequestHeader("X-Smart-Remarkable", "1")
         xhr.setRequestHeader("Content-Type", "application/json")
         xhr.onreadystatechange = function() {
-            if (xhr.readyState === XMLHttpRequest.DONE) callback(xhr.status, xhr.responseText)
+            if (xhr.readyState === XMLHttpRequest.DONE) { if (inflight === xhr) inflight = null; callback(xhr.status, xhr.responseText) }
         }
         xhr.send(body ? JSON.stringify(body) : "")
     }
     function refresh() {
+        if (inflight && Date.now() - requestStarted > 5000) { inflight.abort(); inflight = null; waiting = false; saving = false }
         if (waiting || saving) return
         waiting = true
         request("GET", "", null, function(status, text) {
@@ -34,10 +61,15 @@ Rectangle {
             if (status !== 200) { if (panelOpen) message = "Assistant unavailable. Tap Close to return."; return }
             var state
             try { state = JSON.parse(text) } catch (_) { return }
+            catalog = state.catalog || {}
             if (state.open && !panelOpen) {
                 selectedBackend = state.preferences.backend
                 selectedLength = state.preferences.reply_length
                 pageContext = state.preferences.page_context
+                autoFallback = state.preferences.auto_fallback
+                var order = state.preferences.backend_order || ["codex", "hermes", "claude"]
+                backendOrder = [selectedBackend].concat(order.filter(function(p) { return p !== selectedBackend }))
+                selectedModels = state.preferences.models || {}
                 message = ""
             }
             panelOpen = state.open
@@ -46,7 +78,7 @@ Rectangle {
     function save() {
         if (saving) return
         saving = true
-        request("POST", "", {backend: selectedBackend, reply_length: selectedLength, page_context: pageContext}, function(status, text) {
+        request("POST", "", {backend: selectedBackend, reply_length: selectedLength, page_context: pageContext, auto_fallback: autoFallback, backend_order: backendOrder, models: selectedModels}, function(status, text) {
             saving = false
             if (status === 200) panelOpen = false
             else message = "Could not save. Your previous settings are unchanged."
@@ -76,19 +108,39 @@ Rectangle {
     }
     Rectangle {
         width: Math.min(parent.width - 80, 1040)
-        height: Math.min(parent.height - 80, 1120)
+        height: Math.min(parent.height - 80, 1540)
         anchors.centerIn: parent
         color: "white"; border.color: "black"; border.width: 3; radius: 12
         Column {
-            x: 48; y: 42; width: parent.width - 96; spacing: 30
+            x: 48; y: 42; width: parent.width - 96; spacing: 24
             Text { text: "Notebook assistant"; font.pixelSize: 44; font.bold: true }
-            Text { text: "Backend"; font.pixelSize: 30 }
+            Text { text: "Provider and model priority"; font.pixelSize: 30 }
+            Repeater {
+                model: root.backendOrder
+                delegate: Row {
+                    required property string modelData
+                    required property int index
+                    spacing: 12
+                    Rectangle {
+                        width: 655; height: 100; color: "white"; border.color: "black"; radius: 8
+                        Column {
+                            x: 18; y: 12; spacing: 8
+                            Text { text: (index + 1) + ". " + modelData; font.pixelSize: 28; font.bold: true }
+                            Text { text: root.modelName(modelData); font.pixelSize: 22; width: 620; elide: Text.ElideRight }
+                        }
+                        TapHandler { onTapped: root.nextModel(modelData) }
+                    }
+                    Choice { width: 95; height: 100; label: "Up"; onPicked: root.reorder(index, -1) }
+                    Choice { width: 95; height: 100; label: "Down"; onPicked: root.reorder(index, 1) }
+                }
+            }
+            Text { text: "Tap a model to cycle configured choices. All use your Mac."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
             Row {
                 spacing: 18
-                Choice { label: "Codex"; chosen: root.selectedBackend === "codex"; onPicked: root.selectedBackend = "codex" }
-                Choice { label: "Hermes / oMLX"; chosen: root.selectedBackend === "hermes"; onPicked: root.selectedBackend = "hermes" }
+                Choice { label: "Fallbacks on"; chosen: root.autoFallback; onPicked: root.autoFallback = true }
+                Choice { label: "First only"; chosen: !root.autoFallback; onPicked: root.autoFallback = false }
             }
-            Text { text: "Both use your Mac. Hermes uses local inference."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
+            Text { text: "On failure, try the next provider. Possible tool actions stop automatic replay. Hermes is local; Codex and Claude use cloud models."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
             Text { text: "Reply length"; font.pixelSize: 30 }
             Row {
                 spacing: 14

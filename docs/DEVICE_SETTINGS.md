@@ -1,10 +1,10 @@
-# Device settings and local Hermes
+# Device settings, providers, and fallback
 
 The native toolbar adds **AI** to open settings and **Ask** to send the current
 lasso selection. Ask displays an ellipsis while processing; both buttons reject
 new actions while an answer is running. The panel also opens with a five-finger
 tap in an open notebook. Four fingers still sends the selected question. The panel changes the backend
-(Codex or Hermes/oMLX), reply length (brief, balanced, detailed), and whether the
+(Codex, Hermes/oMLX, or Claude Code), model priority, reply length (brief, balanced, detailed), and whether the
 visible page is included as context. Save applies the preferences to the next
 request; Close discards edits. Sending is disabled while the panel is open, and
 settings gestures received during an answer are discarded.
@@ -18,11 +18,20 @@ A send is reserved immediately, preventing repeated taps from queuing answers. I
 expose general application config, arbitrary commands, credentials, or file paths.
 The panel closes automatically after five minutes if abandoned.
 
+## Provider priority and status
+
+Use Up/Down to order the three providers. The first is primary; with **Fallbacks on**, failures advance through the remaining entries once. Tap a model name to cycle the choices configured for that provider in the Mac's `backends.json` (`models` array). **First only** disables provider failover. There is one model choice per provider in this version.
+
+The pending ink checkbox includes the starting provider and selected model (a CLI alias such as `sonnet` may be shown). A transient toolbar banner reports the current provider/model during inference and disappears before ink delivery. If another provider answers, the reply names that fallback; continuation-page headers use the answering provider. Models still share the same page context, drawing format, red Ballpoint, and tool restoration.
+
+Claude Code uses the Mac's existing `claude auth login` session. The adapter requires a CLI supporting `--safe-mode`, native image stream input, and structured output. It runs without session persistence, personal customizations, or inherited MCP servers. It does not extract subscription credentials or require an Anthropic API key. This is a Mac-hosted backend, not direct tablet-to-cloud service.
+
+The complete chain has a 360-second generation budget. Multi-provider attempts are bounded to at most 150 seconds and reserve time for later providers. Request IDs and receipts cover the whole chain, so a lost HTTP reply rejoins the same work. Timed-out CLI process groups are killed before failover. A failed attempt that may have run a command, edit, or unrecognized tool stops automatic replay to avoid duplicate external actions. Web-only failures can advance. Exhaustion, connection failures, and potential-action failures produce distinct notices.
+
 ## Local inference
 
 Hermes runs on the Mac and uses an oMLX vision model over loopback. The tablet
-continues to use the authenticated SSH tunnel. Selecting Hermes never silently
-falls back to a cloud model if local inference fails. Codex remains the default.
+continues to use the authenticated SSH tunnel. Choose **First only** with Hermes first for local-only inference. **Fallbacks on** explicitly permits the selected question and page context to reach later providers, including cloud models. The default order is Codex, Hermes, Claude.
 
 1. Install Hermes and oMLX on the Mac. Start oMLX with a working vision model.
 2. Copy `bridge/backends.example.json` to
@@ -83,8 +92,8 @@ Disable the panel and return to the stock notebook UI:
 ssh rmpp-wifi '/home/root/smart-remarkable/settings-ui.sh disable'
 ```
 
-The settings schema has automated round-trip, validation, and duplicate-send
-coverage. The firmware 3.27.3.0 resource patches loaded successfully on Paper Pro.
+The settings schema has automated round-trip, provider/model validation, and duplicate-send
+coverage. The current build passed 57 Python bridge/supervisor tests, 51 Rust tests (50 full-suite checks plus the new preference check), and QML lint with the Qt modules installed. The updated provider-order panel still needs a physical touch check after unlocking the tablet. The firmware 3.27.3.0 resource patches loaded successfully on Paper Pro.
 Physical toolbar buttons and settings interaction were confirmed on this firmware.
 With XOVI loaded, capture uses its registered framebuffer address and row stride
 instead of relying on allocator layout. Metadata is cached for the lifetime of
