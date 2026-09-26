@@ -1,6 +1,7 @@
 [Unit]
 Description=Tailscale for notebook assistant connectivity
-After=network.target
+After=network.target smart-remarkable-ssh.socket
+Wants=smart-remarkable-ssh.socket
 RequiresMountsFor=/home/root/smart-remarkable/tailscale
 
 [Service]
