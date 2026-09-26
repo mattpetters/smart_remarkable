@@ -1,0 +1,4 @@
+{
+  "prompt": "Read the user's handwritten selection and answer its question directly. Use plain text, no Markdown, at most 80 words. Prefer a short useful answer with a concrete example when helpful. If the handwriting is unclear, ask for clarification. Call draw_text exactly once with the answer. The application will insert native typed text on the notebook page.",
+  "tools": ["draw_text"]
+}

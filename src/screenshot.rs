@@ -7,7 +7,7 @@ use std::io::{Read, Seek};
 use std::process;
 
 use base64::{engine::general_purpose, Engine as _};
-use image::{GenericImageView, ImageEncoder};
+use image::ImageEncoder;
 
 use crate::device::DeviceModel;
 use crate::simulation::{ScreenshotSimulator, SimulationConfig};
@@ -22,6 +22,7 @@ pub enum ScreenshotMode {
 
 pub struct Screenshot {
     mode: ScreenshotMode,
+    decoded_pixels: std::sync::OnceLock<Option<image::RgbImage>>,
 }
 
 impl Screenshot {
@@ -30,6 +31,7 @@ impl Screenshot {
         info!("Screen detected device: {}", device_model.name());
         Ok(Screenshot {
             mode: ScreenshotMode::Real { data: vec![], device_model },
+            decoded_pixels: std::sync::OnceLock::new(),
         })
     }
 
@@ -38,6 +40,7 @@ impl Screenshot {
         info!("Screen using simulation mode");
         Ok(Screenshot {
             mode: ScreenshotMode::Simulated { simulator },
+            decoded_pixels: std::sync::OnceLock::new(),
         })
     }
 
@@ -110,6 +113,7 @@ impl Screenshot {
     }
 
     pub fn take_screenshot(&mut self) -> Result<()> {
+        self.decoded_pixels.take();
         if let ScreenshotMode::Simulated { simulator } = &mut self.mode {
             // In simulation mode, just advance to next image
             simulator.advance_to_next_image();
@@ -671,17 +675,19 @@ impl Screenshot {
     }
 
     #[cfg(test)]
-    fn from_png_data(data: Vec<u8>) -> Self {
+    pub(crate) fn from_png_data(data: Vec<u8>) -> Self {
         Screenshot {
             mode: ScreenshotMode::Real {
                 data,
                 device_model: DeviceModel::RemarkablePaperPro,
             },
+            decoded_pixels: std::sync::OnceLock::new(),
         }
     }
 
     /// Return the (r, g, b) pixel value at virtual coordinate (vx, vy) in the 768×1024 space.
-    /// Decodes the stored PNG on each call. Returns None if no screenshot data available.
+    /// Decode once per capture; toolbar scans inspect hundreds of pixels.
+    /// Return None when the capture or coordinates are invalid.
     pub fn get_pixel(&self, vx: u32, vy: u32) -> Option<(u8, u8, u8)> {
         let data = match &self.mode {
             ScreenshotMode::Real { data, .. } if !data.is_empty() => data,
@@ -690,7 +696,13 @@ impl Screenshot {
             }
             _ => return None,
         };
-        let img = image::load_from_memory(data).ok()?;
+        let img = self
+            .decoded_pixels
+            .get_or_init(|| image::load_from_memory(data).ok().map(|img| img.to_rgb8()))
+            .as_ref()?;
+        if vx >= img.width() || vy >= img.height() {
+            return None;
+        }
         let pixel = img.get_pixel(vx, vy);
         Some((pixel[0], pixel[1], pixel[2]))
     }

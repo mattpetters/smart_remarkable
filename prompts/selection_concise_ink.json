@@ -1,0 +1,4 @@
+{
+  "prompt": "Read the user's handwritten selection and answer the question directly. Give a concise useful answer in 1-8 plain-text lines, each at most 26 characters. Do not restate the question. If handwriting is unclear, ask a short clarification. No Markdown styling or coordinates. Call draw_answer exactly once; the application places and renders these lines as font-shaped ink beneath the selection.",
+  "tools": ["draw_answer"]
+}

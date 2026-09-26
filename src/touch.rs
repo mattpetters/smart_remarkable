@@ -478,16 +478,19 @@ impl Touch {
     /// Detect whether the palette is currently open by scanning the screenshot.
     ///
     /// When the palette is OPEN, the left ~55px wide strip shows tool icons.
-    /// We check whether there's substantial dark content in the sidebar region
-    /// (pixel at x=28, y=80 is dark = pen1 icon or selected-background visible).
+    /// Require substantial dark content in the pen-icon area, rather than
+    /// mistaking a ruled notebook template for an open toolbar.
     /// When palette is CLOSED, only the toggle circle is visible; y=80 is white canvas.
     fn screenshot_palette_open(ss: &Screenshot) -> bool {
-        // Check a pixel inside the expected sidebar tool area.
-        // Any dark content at this position = palette is open.
-        let is_open = (60u32..110).any(|y| {
-            ss.get_pixel(28, y).map(|(r, _, _)| r < 180).unwrap_or(false)
-        });
-        is_open
+        // A hidden toolbar exposes the notebook template. A ruled line can
+        // contribute a few dark pixels here, so a single pixel is not evidence
+        // that the palette is open. Scan the area: a hollow icon may have
+        // very little ink in its center column even when clearly visible.
+        (60u32..110)
+            .flat_map(|y| (12u32..42).map(move |x| (x, y)))
+            .filter(|&(x, y)| ss.get_pixel(x, y).map(|(r, _, _)| r < 180).unwrap_or(false))
+            .count()
+            >= 90
     }
 
     /// Scan the open palette sidebar and return the y-center of the currently selected tool.
@@ -780,5 +783,45 @@ impl Touch {
         if let TouchMode::Simulated { simulator } = &self.mode {
             simulator.add_manual_trigger(corner);
         }
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    fn ruled_page(open_toolbar: bool) -> Screenshot {
+        let mut img = image::RgbImage::from_pixel(768, 1024, image::Rgb([255, 255, 255]));
+        for y in (25..1024).step_by(25) {
+            for x in 0..768 {
+                img.put_pixel(x, y, image::Rgb([80, 80, 80]));
+            }
+        }
+        if open_toolbar {
+            for y in 70..100 {
+                // Visible icon with a mostly empty center column.
+                for x in 18..23 {
+                    img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+                }
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        Screenshot::from_png_data(bytes.into_inner())
+    }
+
+    #[test]
+    fn ruled_template_is_not_an_open_toolbar() {
+        assert!(!Touch::screenshot_palette_open(&ruled_page(false)));
+        assert!(Touch::screenshot_palette_open(&ruled_page(true)));
+    }
+
+    #[test]
+    fn pixel_reads_handle_image_bounds() {
+        let ss = ruled_page(false);
+        assert_eq!(ss.get_pixel(28, 25), Some((80, 80, 80)));
+        assert_eq!(ss.get_pixel(28, 26), Some((255, 255, 255)));
+        assert_eq!(ss.get_pixel(768, 25), None);
+        assert_eq!(ss.get_pixel(28, 1024), None);
     }
 }

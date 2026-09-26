@@ -691,7 +691,7 @@ pub fn setup_uinput() -> Result<()> {
 }
 
 #[test]
-fn render_chinese_font_test_png() {
+fn render_chinese_font_bitmap() {
     // Exercises the real build_svg_from_lines path (system fonts + embedded
     // fonts both loaded, as on the device) to confirm per-line explicit font
     // selection isn't affected by competing system CJK fonts.
@@ -702,7 +702,9 @@ fn render_chinese_font_test_png() {
     ];
     let svg = build_svg_from_lines(&lines);
     let bitmap = svg_to_bitmap(&svg, 768, 1024).unwrap();
-    write_bitmap_to_file(&bitmap, "/private/tmp/claude-501/-Users-yang-Downloads-remarkable-app/8697c15e-ba77-4d86-a32d-4eb6ec49b9f8/scratchpad/chinese_font_test.png").unwrap();
+    assert_eq!(bitmap.len(), 1024);
+    assert!(bitmap.iter().all(|row| row.len() == 768));
+    assert!(bitmap.iter().flatten().any(|&pixel| pixel), "Expected rendered text ink");
 }
 
 #[test]
