@@ -399,6 +399,7 @@ pub async fn processing_task(
     trigger_source: TriggerSource,
 ) -> Result<()> {
     info!("Processing task: starting");
+    let _awake = crate::awake::RequestWakeLock::acquire(!config.is_test_mode())?;
 
     // Update progress: taking screenshot
     info!("Setting ProgressState::TakingScreenshot");

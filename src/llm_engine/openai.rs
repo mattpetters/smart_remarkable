@@ -10,6 +10,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+async fn check_bridge(client: &reqwest::Client, base_url: &str) -> Result<()> {
+    let response = client.get(format!("{}/health", base_url.trim_end_matches('/')))
+        .timeout(Duration::from_secs(4)).send().await
+        .map_err(|_| anyhow::anyhow!("Mac bridge is unreachable; check the connection and try again"))?;
+    if !response.status().is_success() {
+        anyhow::bail!("Mac bridge is not ready; try again after reconnecting");
+    }
+    let health: json = response.json().await
+        .map_err(|_| anyhow::anyhow!("Mac bridge health response was invalid"))?;
+    anyhow::ensure!(health["status"] == "ready", "Mac bridge is not ready");
+    Ok(())
+}
+
 async fn request_answer(client: &reqwest::Client, url: &str, api_key: &str, body: &json, bridge: bool) -> Result<json> {
     let id = format!(
         "rm-{}-{}-{}",
@@ -172,6 +185,9 @@ impl LLMEngine for OpenAI {
                     .ok()
                     .and_then(|url| url.host_str().map(str::to_owned))
                     .is_some_and(|host| matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]"));
+            if bridge {
+                check_bridge(&client, &self.base_url).await?;
+            }
             tokio::time::timeout(
                 Duration::from_secs(240),
                 request_answer(&client, &format!("{}/v1/chat/completions", self.base_url), &self.api_key, &body, bridge),
@@ -232,6 +248,27 @@ impl LLMEngine for OpenAI {
 mod transport_tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn bridge_probe_checks_health_before_inference() {
+        for (status, body, ready) in [(200, "{\"status\":\"ready\"}", true), (503, "{}", false), (200, "{}", false)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0; 2048];
+                let n = stream.read(&mut buf).await.unwrap();
+                assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET /health "));
+                stream.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            });
+            assert_eq!(check_bridge(&reqwest::Client::new(), &url).await.is_ok(), ready);
+            server.await.unwrap();
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        assert!(check_bridge(&reqwest::Client::new(), &url).await.is_err());
+    }
 
     #[tokio::test]
     async fn lost_and_malformed_responses_retry_the_same_request_id() {

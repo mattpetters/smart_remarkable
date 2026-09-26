@@ -1,4 +1,5 @@
 pub mod preferences;
+pub mod awake;
 pub mod illustration;
 pub mod framebuffer;
 pub mod cancellation;

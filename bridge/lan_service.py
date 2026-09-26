@@ -178,14 +178,29 @@ class Service:
     def close_tunnel(self):
         self.run(["ssh", "-S", str(self.socket), "-O", "exit", self.host])
 
+    def reap_stale_tunnel(self):
+        # Use a fresh connection: the failed forward's old control socket cannot
+        # be trusted. The tablet helper verifies our recorded process lifetime,
+        # listening socket, and failed health check before terminating anything.
+        result = self.run(["ssh", "-S", "none", "-o", "BatchMode=yes",
+                           "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
+                           self.host, f"sh {REMOTE}/tunnel-owner.sh reap"])
+        return result.returncode == 0
+
     def ensure_tunnel(self):
         if not self.tunnel_alive():
-            self.require(["ssh", "-M", "-S", str(self.socket), "-fNT",
-                          "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                          "-o", "ConnectionAttempts=1", "-o", "ExitOnForwardFailure=yes",
-                          "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-                          "-R", f"127.0.0.1:{PORT}:127.0.0.1:{PORT}", self.host],
-                         "Tablet SSH is unavailable; retrying when it reconnects")
+            command = ["ssh", "-M", "-S", str(self.socket), "-fNT",
+                       "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                       "-o", "ConnectionAttempts=1", "-o", "ExitOnForwardFailure=yes",
+                       "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
+                       "-R", f"127.0.0.1:{PORT}:127.0.0.1:{PORT}", self.host]
+            message = "Tablet SSH forwarding is unavailable; retrying when it reconnects"
+            try:
+                self.require(command, message)
+            except Unavailable:
+                if not self.reap_stale_tunnel():
+                    raise
+                self.require(command, message)
         result = self.ssh(f"wget -T 3 -qO- http://127.0.0.1:{PORT}/health")
         try:
             healthy = result.returncode == 0 and json.loads(result.stdout) == self.health()
@@ -194,6 +209,11 @@ class Service:
         if not healthy:
             self.close_tunnel()
             raise Unavailable("Tablet cannot reach the bridge; rebuilding the tunnel on the next check")
+        # A shell channel on the multiplexed connection has the forward's
+        # Dropbear session as its parent. Older deployments lack the helper.
+        owner = self.ssh(f'if test -f {REMOTE}/tunnel-owner.sh; then sh {REMOTE}/tunnel-owner.sh remember "$PPID"; fi')
+        if owner.returncode:
+            raise Unavailable("Tablet tunnel is healthy, but recovery ownership could not be recorded")
 
     def ensure_tablet(self, token):
         state = self.ssh(f"systemctl is-active {UNIT}")

@@ -95,8 +95,30 @@ class AvailabilityTests(unittest.TestCase):
         command = require.call_args[0][0]
         self.assertIn("ServerAliveCountMax=2", command)
         self.assertIn("127.0.0.1:8765:127.0.0.1:8765", command)
-        self.assertEqual(len(remote.call_args_list), 2)
+        self.assertEqual(len(remote.call_args_list), 3)
         self.assertFalse(any("start" in call.args[0] for call in remote.call_args_list))
+
+    def test_orphaned_owned_forward_is_reaped_then_reconnected(self):
+        health = {"status": "ready", "backend": "codex", "response_mode": "ink"}
+        with patch.object(self.service, "tunnel_alive", return_value=False), \
+             patch.object(self.service, "require", side_effect=[Unavailable("occupied"), ""]) as connect, \
+             patch.object(self.service, "reap_stale_tunnel", return_value=True) as reap, \
+             patch.object(self.service, "ssh", return_value=result(json.dumps(health))) as remote, \
+             patch.object(self.service, "health", return_value=health):
+            self.service.ensure_tunnel()
+        reap.assert_called_once()
+        self.assertEqual(connect.call_count, 2)
+        self.assertIn('remember "$PPID"', remote.call_args.args[0])
+
+    def test_unknown_or_healthy_port_owner_is_not_replaced(self):
+        with patch.object(self.service, "tunnel_alive", return_value=False), \
+             patch.object(self.service, "require", side_effect=Unavailable("occupied")) as connect, \
+             patch.object(self.service, "reap_stale_tunnel", return_value=False), \
+             patch.object(self.service, "ssh") as remote:
+            with self.assertRaises(Unavailable):
+                self.service.ensure_tunnel()
+        connect.assert_called_once()
+        remote.assert_not_called()
 
     def test_broken_reverse_forward_is_closed_before_retry(self):
         with patch.object(self.service, "tunnel_alive", return_value=True), \

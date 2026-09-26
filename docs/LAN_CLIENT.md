@@ -100,6 +100,12 @@ drawing. Document files are never modified directly.
    supervisor starts at login, repairs dropped SSH connections, restarts a failed
    bridge, and recreates the tablet listener after a tablet reboot. Healthy
    processes are adopted without interrupting an answer already in progress.
+   Reverse-forward ownership is recorded using the tablet's boot ID, session PID,
+   and process start time. If a disconnected SSH session keeps the bridge port
+   occupied, recovery verifies that identity and the listening socket, checks that
+   the bridge is unreachable, then terminates only that recorded session. Unknown
+   or healthy port owners are left alone. A live stalled-tunnel test verified
+   reconnection without restarting the Mac bridge.
 3. Eventually, direct cloud fallback must cover a sleeping or absent Mac. That
    backend and its credential routing are not implemented yet. Today the Mac must
    be awake, logged in, reachable on the LAN, and authenticated with Codex.
@@ -160,6 +166,12 @@ the request while Codex is thinking and remains pending while the answer is bein
 written. This is persistent status ink, not a transient overlay or animation. A
 failed request leaves a crossed box when the answer area is still known. A
 generation or transport failure before rendering also writes a brief retry notice.
+Active Paper Pro requests acquire a kernel wake lock so autosleep cannot suspend
+network waits and their timeout clock. Cleanup releases it on success or error;
+a ten-minute kernel expiry bounds it if the process crashes. The bridge also
+receives a four-second health probe before inference, so a broken forward fails
+promptly instead of consuming the model's longer response timeout. This uses the
+[Linux userspace wake-lock interface](https://github.com/torvalds/linux/blob/master/kernel/power/wakelock.c).
 If navigation fails between pages, the last portion retains its continuation
 arrow rather than placing a failure mark at unverified coordinates.
 The viewport may scroll down before the checkbox appears. The original question
