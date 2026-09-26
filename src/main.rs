@@ -779,7 +779,7 @@ async fn run_smart_remarkable_loop(
                         info!("Processing completed successfully, ready for next trigger");
                     }
                     Ok(Err(e)) => {
-                        info!("Processing error: {}, ready for next trigger", e);
+                        info!("Processing error: {:#}, ready for next trigger", e);
                     }
                     Err(e) => {
                         info!("Processing task join error: {}, ready for next trigger", e);
@@ -1298,7 +1298,7 @@ fn register_tools(
                     let result = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(
                         smart_remarkable::answer_delivery::draw_complete_answer(&lines, &drawings, rect, Arc::clone(&pen),
                             Arc::clone(&answer_marker_slot), Arc::clone(&answer_cancellation))));
-                    if let Err(error) = &result { log::error!("Answer delivery failed: {error}"); }
+                    if let Err(error) = &result { log::error!("Answer delivery failed: {error:#}"); }
                     if let Ok(mut slot) = answer_delivery_result.lock() {
                         *slot = Some(result.map_err(|error| error.to_string()));
                     }

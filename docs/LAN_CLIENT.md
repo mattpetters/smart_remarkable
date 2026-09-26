@@ -265,6 +265,11 @@ failure. A subsequent on-device request rendered 14 lines at scale 1.0 and
 verified restoring the original tool/profile on the success path as well. `examples/check_answer_pen.rs` provides an on-device
 check without drawing ink or calling a model; `--fail` exercises error cleanup.
 Run it only when the gesture listener is stopped and the tablet is not being used.
+The registered framebuffer path places the normalized pen-menu border two pixels
+left of the legacy capture. Detection accepts both positions while requiring a
+consistent vertical edge and unambiguous pen, size, and color selections. Tests
+cover both layouts, and an on-device round trip with XOVI enabled verified red
+Ballpoint selection and restoration of both profiles and the original lasso.
 The UI reader targets Paper Pro firmware 3.27; an unrecognized settings panel
 aborts setup rather than guessing. Process termination cannot perform UI cleanup.
 An on-device insertion check created and opened a native PDF note page immediately

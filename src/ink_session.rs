@@ -67,12 +67,16 @@ fn selected(ss: &Screenshot, cells: &[(i32, i32)], color: bool) -> Option<usize>
 }
 
 fn has_popover(ss: &Screenshot) -> bool {
-    // The left border distinguishes this popover from page ink in the same area.
-    let border = [70, 130, 240, 330, 400, 470]
-        .iter()
-        .filter(|&&y| ss.get_pixel(55, y).map(|(r, g, b)| r.max(g).max(b) < 180).unwrap_or(false))
-        .count();
-    border >= 5
+    // The registered framebuffer excludes stride padding, moving the normalized
+    // menu border from x=55 to x=53. Accept either capture geometry, but require
+    // one consistent vertical edge rather than unrelated dark pixels nearby.
+    (52..=56).any(|x| {
+        [70, 130, 240, 330, 400, 470]
+            .iter()
+            .filter(|&&y| ss.get_pixel(x, y).map(|(r, g, b)| r.max(g).max(b) < 180).unwrap_or(false))
+            .count()
+            >= 5
+    })
 }
 
 fn read_settings(ss: &Screenshot) -> Option<Settings> {
@@ -507,10 +511,10 @@ mod tests {
         assert_eq!(*shared.lock().unwrap(), initial);
     }
 
-    fn panel(settings: Settings, ambiguous: bool) -> Screenshot {
+    fn panel(settings: Settings, ambiguous: bool, border_x: u32) -> Screenshot {
         let mut image = image::RgbImage::from_pixel(768, 1024, image::Rgb([255, 255, 255]));
         for y in 54..570 {
-            image.put_pixel(55, y, image::Rgb([0, 0, 0]));
+            image.put_pixel(border_x, y, image::Rgb([0, 0, 0]));
         }
         let mut cells = vec![TYPES[settings.kind], SIZES[settings.size], COLORS[settings.color]];
         if ambiguous {
@@ -536,8 +540,11 @@ mod tests {
                 size: index % 3,
                 color: 8 - index,
             };
-            assert_eq!(read_settings(&panel(settings, false)), Some(settings));
-            assert_eq!(read_settings(&panel(settings, true)), None);
+            for border_x in [53, 55] {
+                assert_eq!(read_settings(&panel(settings, false, border_x)), Some(settings));
+                assert_eq!(read_settings(&panel(settings, true, border_x)), None);
+            }
+            assert_eq!(read_settings(&panel(settings, false, 60)), None);
         }
     }
 

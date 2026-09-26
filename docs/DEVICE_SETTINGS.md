@@ -85,15 +85,15 @@ ssh rmpp-wifi '/home/root/smart-remarkable/settings-ui.sh disable'
 
 The settings schema has automated round-trip, validation, and duplicate-send
 coverage. The firmware 3.27.3.0 resource patches loaded successfully on Paper Pro.
-Physical toolbar tapping and settings interaction still require a live check.
+Physical toolbar buttons and settings interaction were confirmed on this firmware.
 With XOVI loaded, capture uses its registered framebuffer address and row stride
 instead of relying on allocator layout. Metadata is cached for the lifetime of
 the notebook process, including its start time so reused process IDs are safe. A physical capture verified this path
 with the extension loaded; RGB channel order and row padding are normalized.
 The live settings API also accepted open/close and rejected a send while the
 panel was open. QML was
-checked with Qt tooling; actual panel activation, touch interaction, and notebook
-restoration require a live device check on each supported firmware.
+checked with Qt tooling; panel activation, touch interaction, and notebook
+restoration require a fresh live device check for other firmware versions.
 
 References: [Hermes programmatic integration](https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration),
 [oMLX](https://github.com/jundot/omlx),
