@@ -21,8 +21,10 @@ No OpenAI API key is required for this route.
   earlier AI replies. It never falls back above the question.
 - When space is tight, the marked-answer prompt pans down the continuous page
   with two parallel touch contacts and checks the resulting ink movement. It
-  rescans newly revealed writing and reserves space for the full 16-line answer
-  budget. Unverified motion or four unsuccessful pans aborts before drawing.
+  rescans newly revealed writing and prefers room for ten full-size lines. At a
+  confirmed stationary boundary, it can use existing clear space for a shorter
+  reply (at least four lines), with a tighter model line budget. Unverified motion
+  or four unsuccessful pans aborts before drawing. Bottom UI chrome is excluded.
 - The marked-answer prompt temporarily selects the actual Ballpoint pen type,
   medium width, and red color. It snapshots the toolbar's selected row and
   visibility, plus the original pen and Ballpoint profiles. The saved selection
@@ -186,15 +188,19 @@ request, and cleanup of temporary images. Rendering tests check marker/text
 separation, checkbox update bounds, and compact short/long answer layouts.
 Append-layout tests cover earlier colored answers, faint ink, simple templates,
 full pages, newly revealed content, selection-coordinate translation, stalled
-scrolling, and unrelated blank captures. Automatic scrolling still needs physical
-verification on the current firmware; synthetic viewports do not establish that
-the tablet accepted the gesture.
+scrolling, and unrelated blank captures. A physical run verified one upward pan of approximately 302 virtual pixels,
+then stopped before submission when a second pan could not be verified. That
+run exposed overly strict space requirements; regression coverage now includes
+stationary-boundary fallback, three-pixel template dots, and clipboard chrome.
+A complete scrolled answer still needs physical verification.
 The trigger test sends a burst larger than the event queue and verifies that none
 is replayed after completion, while a subsequent idle trigger is accepted.
 Temporary-pen tests cover generic selected rows, hidden toolbars, separate pen
 profiles, successful replies, request failures, partial setup rollback, and
-ambiguous settings detection. The complete settings round trip still needs
-physical-device validation. `examples/check_answer_pen.rs` provides an on-device
+ambiguous settings detection. On-device state checks verified selecting red
+Ballpoint and restoring the original profile and active tool after a layout
+failure. A subsequent on-device request rendered 14 lines at scale 1.0 and
+verified restoring the original tool/profile on the success path as well. `examples/check_answer_pen.rs` provides an on-device
 check without drawing ink or calling a model; `--fail` exercises error cleanup.
 Run it only when the gesture listener is stopped and the tablet is not being used.
 The UI reader targets Paper Pro firmware 3.27; an unrecognized settings panel

@@ -6,12 +6,14 @@ use async_trait::async_trait;
 
 const WIDTH: usize = 768;
 const HEIGHT: usize = 1024;
+// Keep clear of the clipboard banner and bottom navigation chrome.
+const PAGE_BOTTOM: usize = 980;
 
 fn ink_mask(screen: &Screenshot) -> Vec<bool> {
     let left = if Touch::screenshot_palette_open(screen) { 60 } else { 10 };
     let right = WIDTH - 10;
     let mut ink = vec![false; WIDTH * HEIGHT];
-    for y in 55..HEIGHT - 10 {
+    for y in 55..PAGE_BOTTOM {
         for x in left..right {
             ink[y * WIDTH + x] = screen
                 .get_pixel(x as u32, y as u32)
@@ -27,7 +29,7 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
     // Remove long continuous rules/grid lines. Dotted templates are rejected
     // later as tiny components. Text crossing a rule remains on adjacent rows.
     let mut rules = vec![false; WIDTH * HEIGHT];
-    for y in 55..HEIGHT - 10 {
+    for y in 55..PAGE_BOTTOM {
         let mut start = left;
         while start < right {
             if !ink[y * WIDTH + start] {
@@ -46,13 +48,13 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
     }
     for x in left..right {
         let mut start = 55;
-        while start < HEIGHT - 10 {
+        while start < PAGE_BOTTOM {
             if !ink[start * WIDTH + x] {
                 start += 1;
                 continue;
             }
             let mut end = start + 1;
-            while end < HEIGHT - 10 && ink[end * WIDTH + x] {
+            while end < PAGE_BOTTOM && ink[end * WIDTH + x] {
                 end += 1;
             }
             if end - start > HEIGHT * 3 / 4 {
@@ -73,7 +75,7 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
     let mut cleaned = vec![false; WIDTH * HEIGHT];
     let mut stack = Vec::new();
     let mut component = Vec::new();
-    for y in 55..HEIGHT - 10 {
+    for y in 55..PAGE_BOTTOM {
         for x in left..right {
             let seed = y * WIDTH + x;
             if !ink[seed] {
@@ -87,7 +89,7 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
                 component.push(y * WIDTH + x);
                 top = top.min(y);
                 last = last.max(y);
-                for yy in y.saturating_sub(1)..=(y + 1).min(HEIGHT - 11) {
+                for yy in y.saturating_sub(1)..=(y + 1).min(PAGE_BOTTOM - 1) {
                     for xx in x.saturating_sub(1).max(left)..=(x + 1).min(right - 1) {
                         let index = yy * WIDTH + xx;
                         if ink[index] {
@@ -97,7 +99,10 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
                     }
                 }
             }
-            if component.len() >= 6 && last - top >= 2 {
+            let min_x = component.iter().map(|index| index % WIDTH).min().unwrap();
+            let max_x = component.iter().map(|index| index % WIDTH).max().unwrap();
+            let template_dot = component.len() <= 9 && last - top <= 2 && max_x - min_x <= 2;
+            if component.len() >= 6 && last - top >= 2 && !template_dot {
                 for &index in &component {
                     cleaned[index] = true;
                 }
@@ -117,7 +122,7 @@ pub fn append_rect(screen: &Screenshot, selection: Rect) -> Result<Rect> {
 
 fn rect_after(last: i32, x: i32) -> Result<Rect> {
     let y = last + 16;
-    let h = HEIGHT as i32 - 10 - y;
+    let h = PAGE_BOTTOM as i32 - 10 - y;
     ensure!(
         h >= 96,
         "No clear space below the page's writing; reveal blank space below it before asking again"
@@ -131,14 +136,16 @@ fn rect_after(last: i32, x: i32) -> Result<Rect> {
     })
 }
 
-// Reserve the full concise-answer budget so scrolling never squeezes the font.
-const ANSWER_HEIGHT: i32 = 34 + 16 * 31;
+// Prefer room for a useful reply; a stationary viewport can still provide a
+// shorter answer with the same font size and a tighter model line budget.
+const ANSWER_HEIGHT: i32 = 34 + 10 * 31;
+const MIN_ANSWER_HEIGHT: i32 = 34 + 4 * 31;
 const MAX_SCROLLS: usize = 4;
 
 /// Register pre/post-scroll ink. A stalled swipe or changed page must never be
 /// treated as empty space. Ignore screen chrome and use template-filtered ink.
 fn upward_shift(before: &[bool], after: &[bool]) -> Option<i32> {
-    let points: Vec<_> = (450..1000)
+    let points: Vec<_> = (450..PAGE_BOTTOM)
         .flat_map(|y| (70..740).map(move |x| (x, y)))
         .filter(|&(x, y)| before[y * WIDTH + x])
         .collect();
@@ -163,7 +170,8 @@ fn upward_shift(before: &[bool], after: &[bool]) -> Option<i32> {
         matches as f32 / visible.len() as f32
     };
     let stationary = score(0);
-    let (shift, confidence) = (40..=600).map(|dy| (dy, score(dy))).max_by(|a, b| a.1.total_cmp(&b.1))?;
+    let (shift, confidence) = (8..=600).map(|dy| (dy, score(dy))).max_by(|a, b| a.1.total_cmp(&b.1))?;
+    log::info!("Append motion: shift={} confidence={:.2} stationary={:.2}", shift, confidence, stationary);
     (confidence >= 0.75 && confidence > stationary + 0.20).then_some(shift as i32)
 }
 
@@ -191,6 +199,12 @@ async fn prepare_with(ui: &mut impl PageUi, selection: Rect) -> Result<Rect> {
     let mut selection_bottom = selection.y + selection.h;
     for attempt in 0..=MAX_SCROLLS {
         let last = bottom(&mask).unwrap_or(55).max(selection_bottom);
+        log::info!(
+            "Append scan: ink bottom={:?}, selection floor={}, pass={}",
+            bottom(&mask),
+            selection_bottom,
+            attempt
+        );
         if let Ok(rect) = rect_after(last, selection.x) {
             if rect.h >= ANSWER_HEIGHT {
                 return Ok(rect);
@@ -202,7 +216,25 @@ async fn prepare_with(ui: &mut impl PageUi, selection: Rect) -> Result<Rect> {
         );
         ui.scroll().await?;
         let after = ink_mask(&ui.capture().await?);
-        let shift = upward_shift(&mask, &after).ok_or_else(|| anyhow::anyhow!("Could not verify page scrolling; no answer was drawn"))?;
+        let shift = match upward_shift(&mask, &after) {
+            Some(shift) => shift,
+            None => {
+                // An unchanged viewport is not a failed request when there is
+                // already clear room for a concise answer. Never accept an
+                // unrelated/blank frame as evidence of free space.
+                let count = mask.iter().filter(|&&p| p).count() + after.iter().filter(|&&p| p).count();
+                let same = mask.iter().zip(&after).filter(|(a, b)| **a && **b).count() * 2;
+                if count >= 32 && same as f32 / count as f32 >= 0.85 {
+                    if let Ok(rect) = rect_after(bottom(&after).unwrap_or(55).max(selection_bottom), selection.x) {
+                        if rect.h >= MIN_ANSWER_HEIGHT {
+                            log::info!("Append layout: scroll stopped; using {} px of verified clear space", rect.h);
+                            return Ok(rect);
+                        }
+                    }
+                }
+                anyhow::bail!("Could not verify page scrolling; no answer was drawn");
+            }
+        };
         selection_bottom = (selection_bottom - shift).max(55);
         log::info!("Append layout: verified upward page motion of {} px", shift);
         mask = after;
@@ -283,6 +315,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stopped_scroll_uses_clear_room_for_a_shorter_answer() {
+        let mut ui = FakePage {
+            frames: [viewport(0, &[700]), viewport(0, &[700])].into(),
+            scrolls: 0,
+        };
+        let rect = prepare_with(&mut ui, Rect { x: 100, y: 90, w: 200, h: 50 }).await.unwrap();
+        assert_eq!(rect.y, 735);
+        assert_eq!(rect.h, 235);
+        assert_eq!(ui.scrolls, 1);
+    }
+
+    #[tokio::test]
     async fn refuses_stalled_scroll_or_unrelated_blank_capture() {
         for after in [viewport(0, &[880]), viewport(0, &[])] {
             let mut ui = FakePage {
@@ -298,12 +342,12 @@ mod tests {
     #[tokio::test]
     async fn translates_the_selected_question_floor_when_scrolling() {
         let mut ui = FakePage {
-            frames: [viewport(0, &[490]), viewport(420, &[490])].into(),
+            frames: [viewport(0, &[650]), viewport(420, &[650])].into(),
             scrolls: 0,
         };
-        let rect = prepare_with(&mut ui, Rect { x: 100, y: 485, w: 200, h: 40 }).await.unwrap();
+        let rect = prepare_with(&mut ui, Rect { x: 100, y: 645, w: 200, h: 40 }).await.unwrap();
         assert_eq!(ui.scrolls, 1);
-        assert!(rect.y >= 120 && rect.y <= 123);
+        assert!(rect.y >= 280 && rect.y <= 283);
     }
 
     fn screen(dotted: bool, writing_bottom: u32) -> Screenshot {
@@ -334,7 +378,7 @@ mod tests {
         for dotted in [false, true] {
             let rect = append_rect(&screen(dotted, 712), selection).unwrap();
             assert_eq!(rect.y, 728);
-            assert_eq!(rect.h, 286);
+            assert_eq!(rect.h, 242);
         }
     }
 
@@ -365,5 +409,33 @@ mod tests {
         image::DynamicImage::ImageRgb8(image).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
         let rect = append_rect(&Screenshot::from_png_data(bytes.into_inner()), Rect { x: 100, y: 90, w: 100, h: 100 }).unwrap();
         assert_eq!(rect.y, 661);
+    }
+
+    #[test]
+    fn ignores_three_pixel_template_dots_and_clipboard_footer() {
+        let mut image = image::RgbImage::from_pixel(768, 1024, image::Rgb([255, 255, 255]));
+        for y in (75..960).step_by(25) {
+            for x in (70..750).step_by(8) {
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        image.put_pixel(x + dx, y + dy, image::Rgb([50, 50, 50]));
+                    }
+                }
+            }
+        }
+        for y in 989..1024 {
+            for x in 55..764 {
+                image.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        for y in 690..710 {
+            for x in 140..145 {
+                image.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let rect = append_rect(&Screenshot::from_png_data(bytes.into_inner()), Rect { x: 100, y: 90, w: 100, h: 100 }).unwrap();
+        assert_eq!(rect.y, 725);
     }
 }
