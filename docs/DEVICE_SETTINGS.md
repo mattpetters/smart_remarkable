@@ -1,7 +1,9 @@
 # Device settings and local Hermes
 
-The optional native panel opens with a five-finger tap in an open notebook.
-Four fingers still sends the selected question. The panel changes the backend
+The native toolbar adds **AI** to open settings and **Ask** to send the current
+lasso selection. Ask displays an ellipsis while processing; both buttons reject
+new actions while an answer is running. The panel also opens with a five-finger
+tap in an open notebook. Four fingers still sends the selected question. The panel changes the backend
 (Codex or Hermes/oMLX), reply length (brief, balanced, detailed), and whether the
 visible page is included as context. Save applies the preferences to the next
 request; Close discards edits. Sending is disabled while the panel is open, and
@@ -10,7 +12,9 @@ settings gestures received during an answer are discarded.
 Preferences live on the tablet at
 `/home/root/smart-remarkable/preferences.json`. They contain no credentials.
 The loopback-only API on port 8766 accepts only these enumerated preferences;
-mutations require an open panel and the `X-Smart-Remarkable: 1` header. It does not
+preference changes require an open panel and the `X-Smart-Remarkable: 1` header.
+Opening the panel and requesting a send use separate header-protected endpoints.
+A send is reserved immediately, preventing repeated taps from queuing answers. It does not
 expose general application config, arbitrary commands, credentials, or file paths.
 The panel closes automatically after five minutes if abandoned.
 
@@ -49,21 +53,23 @@ returned the cached answer immediately without another Hermes invocation.
 ## Native panel installation
 
 The QML panel is an optional XOVI/qt-resource-rebuilder extension targeting
-English Paper Pro firmware 3.27. It overlays the notebook interface without
-writing settings controls as notebook ink. It is separate from the upstream
+English Paper Pro firmware 3.27. It inserts controls into the native toolbar grid and overlays the notebook
+interface without writing settings controls as notebook ink. It is separate from the upstream
 experimental LLM selection button.
 
-Install the official aarch64 XOVI + qt-resource-rebuilder distribution, then:
+Install the official aarch64 XOVI distribution, including qt-resource-rebuilder,
+framebuffer-spy, and xovi-message-broker. The helper enables the two framebuffer
+modules from the bundled inactive extensions, then:
 
 ```sh
-scp device/settings/Settings.qml rmpp-wifi:/home/root/smart-remarkable/Settings.qml
+scp device/settings/Settings.qml device/settings/AssistantButton.qml device/settings/settings.qmd rmpp-wifi:/home/root/smart-remarkable/
 scp device/settings/activate.sh rmpp-wifi:/home/root/smart-remarkable/settings-ui.sh
-scp device/settings/settings.qmd rmpp-wifi:/home/root/xovi/exthome/qt-resource-rebuilder/smart-remarkable-settings.qmd
 # Only while idle, after the current notebook has saved:
 ssh rmpp-wifi 'chmod 700 /home/root/smart-remarkable/settings-ui.sh && /home/root/smart-remarkable/settings-ui.sh'
 ```
 
-Activation builds the firmware's QML hashtable, then restarts the notebook
+Activation builds the firmware's QML hashtable (its first save takes at least
+60 seconds), then restarts the notebook
 interface with a runtime systemd override. It preserves existing vendor service
 configuration. The helper restores the stock interface if activation fails.
 The Mac supervisor can restore an enabled panel after reboot, before starting
@@ -77,7 +83,15 @@ Disable the panel and return to the stock notebook UI:
 ssh rmpp-wifi '/home/root/smart-remarkable/settings-ui.sh disable'
 ```
 
-The settings schema has automated round-trip and validation coverage. QML was
+The settings schema has automated round-trip, validation, and duplicate-send
+coverage. The firmware 3.27.3.0 resource patches loaded successfully on Paper Pro.
+Physical toolbar tapping and settings interaction still require a live check.
+With XOVI loaded, capture uses its registered framebuffer address and row stride
+instead of relying on allocator layout. Metadata is cached for the lifetime of
+the notebook process, including its start time so reused process IDs are safe. A physical capture verified this path
+with the extension loaded; RGB channel order and row padding are normalized.
+The live settings API also accepted open/close and rejected a send while the
+panel was open. QML was
 checked with Qt tooling; actual panel activation, touch interaction, and notebook
 restoration require a live device check on each supported firmware.
 

@@ -58,7 +58,8 @@ No OpenAI API key is required for this route.
 - Global gesture listener: no notebook ID, title, template, or per-notebook setup.
 - Optional Mac login service restores the bridge, SSH tunnel, and tablet listener.
 - The notebook-answer path does not require XOVI. The optional tappable settings
-  overlay uses XOVI/qt-resource-rebuilder and a separate five-finger gesture.
+  overlay and native AI/Ask toolbar buttons use XOVI/qt-resource-rebuilder; a
+  five-finger gesture also opens settings.
 - Paper Pro Move is not yet supported by the device geometry in this fork.
 
 Native editable text (`REMARKABLE_RESPONSE_MODE=text`) is experimental and not
@@ -316,3 +317,35 @@ References: [upstream](https://github.com/yangg1224/smart_remarkable),
 [XOVI](https://github.com/asivery/xovi),
 [rm-literm](https://github.com/asivery/rm-literm),
 [libghostty-vt](https://github.com/ghostty-org/ghostty/blob/main/include/ghostty/vt.h).
+
+## Charts and technical illustrations
+
+Ink answers may include up to two labeled line drawings when a graph, chart,
+flowchart, circuit, or simple illustration helps explain the question. Codex and
+the optional Hermes adapter accept the same structured format: answer lines,
+followed by titles, polylines, and text labels. Each illustration uses a bounded
+600 by 360 coordinate canvas. The model is instructed to include axes and units,
+calculate numeric curves accurately, identify illustrative data, and attribute
+researched data in the explanation.
+
+The tablet validates drawings before making answer strokes, escapes label text,
+and renders its own SVG. It accepts no model-supplied SVG, code, resource URLs,
+or images in this format. Limits are two illustrations, 64 strokes and 1024
+points per illustration, and 24 labels. Each reserves a 440-pixel-high area,
+including its title and AI marker. Drawings follow the answer in clear space or
+continue on a new native note page. They share red Ballpoint selection, tool
+restoration, completion markers, and the existing no-replay delivery policy.
+
+A synthetic RC step-response image was answered by Codex with five text lines
+and a labeled curve, including the 63.2% point at one time constant. The request
+completed in about 35 seconds and its output was rendered through the same Rust
+illustration renderer. This validates model output and layout; physical chart
+ink still needs a device check. Hermes can produce the structured format, but
+the tested local model violated canvas bounds; local illustrations remain
+experimental and invalid output is rejected rather than drawn.
+
+To preview the first illustration in a saved bridge answer without a tablet:
+
+```sh
+cargo run --example preview_illustration -- answer.json output.svg output.png
+```

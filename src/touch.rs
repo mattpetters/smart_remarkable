@@ -236,6 +236,9 @@ impl Touch {
 
                     // Poll for the LLM/Draw buttons' trigger files (independent of trigger_corner)
                     _ = sleep(Duration::from_millis(150)) => {
+                        if crate::preferences::take_send() {
+                            return Ok(TriggerSource::LlmButton);
+                        }
                         if std::fs::remove_file(LLM_BUTTON_TRIGGER_FILE).is_ok() {
                             debug!("LLM button trigger file detected");
                             return Ok(TriggerSource::LlmButton);

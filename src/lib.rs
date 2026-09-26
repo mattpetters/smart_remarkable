@@ -1,4 +1,6 @@
 pub mod preferences;
+pub mod illustration;
+pub mod framebuffer;
 pub mod cancellation;
 pub mod answer_ui;
 pub mod answer_delivery;

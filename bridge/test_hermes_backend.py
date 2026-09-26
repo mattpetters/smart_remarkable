@@ -7,11 +7,16 @@ import unittest
 from unittest.mock import patch
 
 from codex_bridge import RequestError
-from hermes_backend import run_hermes
+from hermes_backend import parse_answer, run_hermes
 from hermes_worker import final_text
 
 
 class HermesTests(unittest.TestCase):
+    def test_only_structured_ink_replies_reach_the_tablet(self):
+        with self.assertRaises(ValueError):
+            parse_answer("The graph is displayed above.", "ink")
+        self.assertEqual(parse_answer('```json\n{"lines":["Hello"],"illustrations":[]}\n```', "ink"),
+                         {"lines":["Hello"],"illustrations":[]})
     def test_partial_or_interrupted_agent_turn_is_not_a_complete_answer(self):
         for flag, value in [("error", "failed"), ("failed", True), ("partial", True), ("interrupted", True), ("completed", False)]:
             with self.assertRaises(RuntimeError):
@@ -33,7 +38,7 @@ class HermesTests(unittest.TestCase):
                 settings = json.loads((Path(kwargs['env']['HERMES_HOME'])/'config.yaml').read_text())
                 self.assertTrue(settings['model']['supports_vision'])
                 self.assertNotIn('OPENAI_API_KEY', kwargs['env'])
-                Path(command[3]).write_text(json.dumps({'text': 'One complete answer with a long source attribution.'}))
+                Path(command[3]).write_text(json.dumps({'text': json.dumps({'lines':['One complete answer with a long source attribution.'], 'illustrations':[]})}))
                 return subprocess.CompletedProcess(command, 0, b'', b'')
             with patch('hermes_backend.subprocess.run', side_effect=invoke):
                 result = run_hermes('Reply pagination: enabled. Reply layout: use at most 128 lines, each at most 20 characters.',

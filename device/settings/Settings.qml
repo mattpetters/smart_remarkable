@@ -44,6 +44,7 @@ Rectangle {
         })
     }
     function save() {
+        if (saving) return
         saving = true
         request("POST", "", {backend: selectedBackend, reply_length: selectedLength, page_context: pageContext}, function(status, text) {
             saving = false
@@ -52,6 +53,7 @@ Rectangle {
         })
     }
     function closePanel() {
+        if (saving) return
         saving = true
         panelOpen = false
         request("POST", "/close", null, function(status, text) { saving = false })
@@ -100,7 +102,7 @@ Rectangle {
                 Choice { label: "On"; chosen: root.pageContext; onPicked: root.pageContext = true }
                 Choice { label: "Off"; chosen: !root.pageContext; onPicked: root.pageContext = false }
             }
-            Text { text: "Four fingers: send  ·  Five fingers: settings"; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
+            Text { text: "Lasso your question, then tap Ask.\nAI opens settings. Four/five fingers also work."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
             Text { text: root.message; font.pixelSize: 24; width: parent.width; wrapMode: Text.WordWrap; height: 70 }
             Row {
                 spacing: 18

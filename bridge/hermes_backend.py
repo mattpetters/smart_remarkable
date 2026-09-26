@@ -6,6 +6,17 @@ from pathlib import Path
 import subprocess
 import tempfile
 from urllib.parse import urlsplit
+from illustrations import DRAWING_INSTRUCTIONS
+
+
+def parse_answer(text, mode):
+    if mode == "text":
+        return {"text": text}
+    # Tolerate a JSON fence, but never print a serialized drawing or accept a
+    # claim about a tool-generated image which the tablet cannot receive.
+    if text.startswith("```json\n") and text.endswith("```"):
+        text = text[8:-3].strip()
+    return json.loads(text)
 
 
 def run_hermes(prompt, images, *, mode, timeout, config):
@@ -29,7 +40,9 @@ def run_hermes(prompt, images, *, mode, timeout, config):
         "uncertainty before giving up. Search only the public-topic terms needed, not unrelated notes. "
         "Web, terminal and file tools are available; use them only as needed for the selected request. Changes or external "
         "actions require an explicit request in the selected handwriting. Return only the final answer "
-        "in plain text, without thinking, JSON, Markdown fences, an AI label, or a preamble. "
+        + ("in plain text. " if mode == "text" else
+           'as JSON with keys "lines" (array of strings) and "illustrations" (array). ' + DRAWING_INSTRUCTIONS)
+        + "Do not include thinking, Markdown fences, an AI label, or a preamble. "
         "Use short source names/domains for researched facts.\n" + prompt
     )
     with tempfile.TemporaryDirectory(prefix="remarkable-hermes-") as directory:
@@ -45,7 +58,15 @@ def run_hermes(prompt, images, *, mode, timeout, config):
             "auxiliary": {name: {"provider": "custom", "model": model, "base_url": base_url}
                           for name in ("vision", "compression")},
         }))
-        content = [{"type": "text", "text": "Read the selected question and answer it completely."}]
+        user_instruction = "Read the selected question and answer it completely."
+        if mode != "text":
+            user_instruction += (
+                ' Return your final answer as JSON: {"lines":["explanation"],"illustrations":[]}.'
+                " For a diagram, fill illustrations using the title/strokes/labels format from your instructions."
+                " Do not create image files or display graphs with tools: tool images are not shown on this tablet."
+                " Only drawings in the final JSON reach the page. Tools may compute numeric values and research facts."
+            )
+        content = [{"type": "text", "text": user_instruction}]
         content += [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}
                     for png in images]
         request, output = temp / "request.json", temp / "answer.json"
@@ -67,7 +88,7 @@ def run_hermes(prompt, images, *, mode, timeout, config):
             raise RequestError(502, "Local Hermes failed; check oMLX and the selected vision model")
         try:
             text = json.loads(output.read_text())["text"].strip()
-            answer = {"text": text} if mode == "text" else {"lines": text.splitlines()}
+            answer = parse_answer(text, mode)
             return validate_answer(format_answer_sources(answer, mode, prompt), mode)
         except (ValueError, KeyError, TypeError):
             raise RequestError(502, "Local Hermes returned an invalid answer") from None

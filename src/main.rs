@@ -713,6 +713,7 @@ async fn run_smart_remarkable_loop(
                     info!("Ignoring send while settings panel is open");
                     continue;
                 }
+                if !smart_remarkable::preferences::begin_answer() { continue; }
 
                 // Update progress to indicate we're processing (not waiting for triggers)
                 // let _ = progress_tx.send(ProgressState::TakingScreenshot);
@@ -764,6 +765,7 @@ async fn run_smart_remarkable_loop(
                 // Wait for either processing to complete or user to cancel
                 // The cancel_monitor will trigger cancellation which processing_task respects
                 let processing_result = coordinator::finish_processing(processing_handle, &mut trigger_rx).await;
+                smart_remarkable::preferences::finish_answer();
 
                 // Cancel the cancel monitor (it may still be waiting)
                 cancellation.cancel_execution();
@@ -1275,6 +1277,15 @@ fn register_tools(
                     }
                 };
 
+                let drawings = arguments.get("illustrations").cloned().unwrap_or_else(|| serde_json::json!([]));
+                let drawings = match serde_json::from_value::<Vec<smart_remarkable::illustration::Illustration>>(drawings) {
+                    Ok(drawings) if smart_remarkable::illustration::validate(&drawings).is_ok() => drawings,
+                    _ => {
+                        if let Ok(mut slot) = answer_delivery_result.lock() { *slot = Some(Err("Invalid illustration".into())); }
+                        return;
+                    }
+                };
+
                 if let Some(output_file) = &output_file {
                     if let Err(e) = std::fs::write(output_file, lines.join("\n")) {
                         log::error!("Failed to write output file: {}", e);
@@ -1285,7 +1296,7 @@ fn register_tools(
                 let rect = placement.unwrap_or(Rect { x: 40, y: 80, w: 688, h: 900 });
                 if paginate && !no_draw && !test_mode {
                     let result = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(
-                        smart_remarkable::answer_delivery::draw_complete_answer(&lines, rect, Arc::clone(&pen),
+                        smart_remarkable::answer_delivery::draw_complete_answer(&lines, &drawings, rect, Arc::clone(&pen),
                             Arc::clone(&answer_marker_slot), Arc::clone(&answer_cancellation))));
                     if let Err(error) = &result { log::error!("Answer delivery failed: {error}"); }
                     if let Ok(mut slot) = answer_delivery_result.lock() {

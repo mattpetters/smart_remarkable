@@ -22,6 +22,21 @@ def request_body():
     ]}], "tools": [{"type": "function", "function": {"name": "draw_text"}}]}
 
 
+class IllustrationTests(unittest.TestCase):
+    def test_drawings_survive_validation_and_reflow_without_executable_fields(self):
+        from illustrations import validate_illustrations
+        drawing = {"title": "An illustrative plot", "strokes": [[{"x": 40, "y": 30}, {"x": 40, "y": 300}]],
+                   "labels": [{"x": 80, "y": 330, "text": "Time (s)"}]}
+        answer = {"lines": ["A complete explanation."], "illustrations": [drawing]}
+        self.assertEqual(validate_answer(format_answer_sources(answer, "ink", ""), "ink"), answer)
+        for point in ({"x": -1, "y": 20}, {"x": float("nan"), "y": 20}, {"x": True, "y": 20}):
+            invalid = json.loads(json.dumps(drawing)); invalid["strokes"][0][0] = point
+            with self.assertRaises(ValueError): validate_illustrations([invalid])
+        for change in ({"svg": "<script/>"}, {"labels": [{"x": 580, "y": 330, "text": "Too wide"}]}):
+            with self.assertRaises(ValueError): validate_illustrations([{**drawing, **change}])
+        with self.assertRaises(ValueError): validate_illustrations([drawing]*3)
+
+
 class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.calls = []

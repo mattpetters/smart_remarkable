@@ -1,6 +1,6 @@
 {
   "name": "draw_answer",
-  "description": "Draw a complete answer to the screen as a list of lines. Do not compute any coordinates or SVG yourself \u2014 just provide the text content, one entry per line, in the order they should appear top to bottom. The app lays them out for you.",
+  "description": "Draw a complete answer as plain-text lines and optional bounded line illustrations. The app handles page placement.",
   "internal_command": "draw_answer",
   "parameters": {
     "type": "object",
@@ -10,6 +10,85 @@
         "description": "The answer as plain-text lines, top to bottom. Follow the prompt and Reply layout limits: at most 128 lines and 52 characters per line. Prefix bullet lines with - . Do not include an AI label, Markdown styling, coordinates, or SVG; the app adds attribution and status.",
         "items": {
           "type": "string"
+        }
+      },
+      "illustrations": {
+        "type": "array",
+        "maxItems": 2,
+        "items": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "maxLength": 44
+            },
+            "strokes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 128,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "number",
+                      "minimum": 8,
+                      "maximum": 592
+                    },
+                    "y": {
+                      "type": "number",
+                      "minimum": 8,
+                      "maximum": 352
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "labels": {
+              "type": "array",
+              "maxItems": 24,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number",
+                    "minimum": 8,
+                    "maximum": 592
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": 18,
+                    "maximum": 352
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "text"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "title",
+            "strokes",
+            "labels"
+          ],
+          "additionalProperties": false
         }
       }
     },

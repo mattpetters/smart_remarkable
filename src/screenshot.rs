@@ -138,15 +138,17 @@ impl Screenshot {
 
         // Find framebuffer location in memory
         debug!("screenshot: finding address");
-        let skip_bytes = self.find_framebuffer_address(&pid)?;
-
-        // Read the framebuffer data
-        debug!("screenshot: reading data");
-        let screenshot_data = self.read_framebuffer(&pid, skip_bytes)?;
-
-        // Process the image data (transpose, color correction, etc.)
-        debug!("screenshot: processing image");
-        let processed_data = self.process_image(screenshot_data, rotated)?;
+        let registered_frame = match &self.mode {
+            ScreenshotMode::Real { device_model: DeviceModel::RemarkablePaperPro, .. } => crate::framebuffer::capture_png(&pid)?,
+            _ => None,
+        };
+        let processed_data = if let Some(png) = registered_frame {
+            self.process_png(png, rotated)?
+        } else {
+            let skip_bytes = self.find_framebuffer_address(&pid)?;
+            let screenshot_data = self.read_framebuffer(&pid, skip_bytes)?;
+            self.process_image(screenshot_data, rotated)?
+        };
 
         // Update the data
         if let ScreenshotMode::Real { data, .. } = &mut self.mode {
@@ -276,7 +278,10 @@ impl Screenshot {
         // Encode the raw data to PNG
         debug!("Encoding raw image data to PNG");
         let png_data = self.encode_png(&data)?;
+        self.process_png(png_data, rotated)
+    }
 
+    fn process_png(&self, png_data: Vec<u8>, rotated: Option<bool>) -> Result<Vec<u8>> {
         // Resize the PNG to VIRTUAL_WIDTH x VIRTUAL_HEIGHT
         debug!("Resizing image to {}x{}", VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
         let img = image::load_from_memory(&png_data)?;

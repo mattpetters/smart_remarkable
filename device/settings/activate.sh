@@ -22,6 +22,14 @@ fi
 test -f "$xovi/xovi.so"
 test -f "$xovi/extensions.d/qt-resource-rebuilder.so"
 test -f "$root/Settings.qml"
+test -f "$root/AssistantButton.qml"
+for module in framebuffer-spy xovi-message-broker; do
+    if [ ! -f "$xovi/extensions.d/$module.so" ]; then
+        test -f "$xovi/inactive-extensions/$module.so"
+        ln -s "$xovi/inactive-extensions/$module.so" "$xovi/extensions.d/$module.so"
+    fi
+done
+cp "$root/settings.qmd" "$xovi/exthome/qt-resource-rebuilder/smart-remarkable-settings.qmd"
 buildpid=
 rollback() {
     [ -z "$buildpid" ] || kill "$buildpid" 2>/dev/null || true
@@ -41,7 +49,8 @@ if [ ! -s "$hashtab" ] || [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$current"
     count=0
     while ! grep -q 'Hashtab saved to' "$root/settings-activation.log"; do
         count=$((count + 1))
-        [ "$count" -lt 50 ] || { echo 'UI hashtable timed out; restoring stock interface'; exit 1; }
+        # QMLDiff intentionally waits 60 seconds before its first save.
+        [ "$count" -lt 110 ] || { echo 'UI hashtable timed out; restoring stock interface'; exit 1; }
         kill -0 "$buildpid" 2>/dev/null || exit 1
         sleep 1
     done
