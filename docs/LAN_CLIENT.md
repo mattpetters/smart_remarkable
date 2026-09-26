@@ -20,6 +20,9 @@ No OpenAI API key is required for this route.
 - The answer appears line by line below the selection when space permits.
 - Extra gestures during capture, inference, or drawing are discarded immediately;
   they do not queue another question. The bridge also rejects concurrent inference.
+- Blank paragraph separators in a model response are omitted instead of rejecting
+  the answer. Pen selection is idempotent; answer and failure marks reuse the pen
+  prepared for the pending marker without reopening its settings.
 - Read-only, ephemeral Codex invocations. The visible page supplies conversation
   context; there is no hidden session history shared across notebooks.
 - Authenticated HTTP bound to loopback on the Mac, reached through an SSH
@@ -78,10 +81,13 @@ The physical lasso + four-finger gesture successfully sent a handwritten questio
 through the Mac's Codex CLI and drew a readable answer beneath it as pen strokes.
 One short-answer run took approximately 9.5 seconds from trigger to completed
 render, including 5.9 seconds in the bridge. This is a single measurement, not a
-latency guarantee. The first answer was legible but oversized. The newer compact font, status marker,
-and page-context changes have automated coverage and a successful synthetic
-two-image Codex test; physical readability and the new status behavior still need
-feedback on the device. No notebook images are committed.
+latency guarantee. The first answer was legible but oversized. After correcting
+repeated pen-tool taps and blank-line response validation, on-device logs confirmed
+a compact ten-line reply completed with visible-page context and status markers in
+about 19 seconds, including 7.7 seconds in the bridge. There was no second pen-tool
+switch during answer rendering. Typography still needs user feedback across more
+page layouts. A synthetic two-image Codex test also verified context use. No
+notebook images are committed.
 
 ## Build and run
 

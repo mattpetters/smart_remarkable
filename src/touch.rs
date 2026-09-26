@@ -646,13 +646,17 @@ impl Touch {
                 return self.select_fineliner().await;
             }
             PenTool::Ballpoint => {
-                // Open palette if needed, tap pen1 sidebar icon, and only
-                // close the palette again if we opened it (it may be pinned)
+                // Tapping an already selected pen opens its settings. Read
+                // the active tool again after revealing a hidden toolbar.
+                let mut active = current_tool;
                 if !palette_open {
                     self.tap(Self::PALETTE_BUTTON).await?;
                     sleep(Duration::from_millis(100)).await;
+                    active = self.read_tool_state().await.1;
                 }
-                self.tap((Self::SIDEBAR_X, Self::SIDEBAR_Y_PEN1)).await?;
+                if Self::ballpoint_needs_selection(active) {
+                    self.tap((Self::SIDEBAR_X, Self::SIDEBAR_Y_PEN1)).await?;
+                }
                 if !palette_open {
                     self.tap(Self::PALETTE_BUTTON).await?;
                 }
@@ -662,6 +666,10 @@ impl Touch {
 
         info!("switch_to_tool: {:?} → {:?}", previous, target);
         Ok(previous)
+    }
+
+    fn ballpoint_needs_selection(active: PenTool) -> bool {
+        active != PenTool::Ballpoint
     }
 
     /// Restore a previously saved tool (e.g. after drawing is done).
@@ -823,5 +831,24 @@ mod palette_tests {
         assert_eq!(ss.get_pixel(28, 26), Some((255, 255, 255)));
         assert_eq!(ss.get_pixel(768, 25), None);
         assert_eq!(ss.get_pixel(28, 1024), None);
+    }
+
+    #[test]
+    fn active_ballpoint_is_not_tapped_again() {
+        let mut image = image::RgbImage::from_pixel(768, 1024, image::Rgb([255, 255, 255]));
+        for y in 53..106 {
+            for x in 2..54 {
+                image.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let screen = Screenshot::from_png_data(bytes.into_inner());
+        assert!(Touch::screenshot_palette_open(&screen));
+        let active = Touch::y_to_pen_tool(Touch::screenshot_selected_tool_y(&screen).unwrap());
+        assert_eq!(active, PenTool::Ballpoint);
+        assert!(!Touch::ballpoint_needs_selection(active));
+        assert!(Touch::ballpoint_needs_selection(PenTool::Unknown));
+        assert!(Touch::ballpoint_needs_selection(PenTool::Fineliner));
     }
 }

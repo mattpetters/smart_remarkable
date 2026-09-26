@@ -1271,7 +1271,7 @@ fn register_tools(
                     line_svgs.insert(0, status_svg(rect, AnswerStatus::Pending).unwrap());
                 }
 
-                let previous_tool = if !no_draw && !test_mode {
+                let previous_tool = if !no_draw && !test_mode && pending != Some(rect) {
                     tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current().block_on(async {
                             // Use pen slot 1 (the user's own pen, typically black)

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import urllib.error
 import urllib.request
 
-from codex_bridge import Bridge, PNG_PREFIX, RequestError, run_codex, selection_input, validate_answer
+from codex_bridge import Bridge, PNG_PREFIX, RequestError, cli_failure_reason, run_codex, selection_input, validate_answer
 
 PNG = b"\x89PNG\r\n\x1a\nfixture"
 PAGE = b"\x89PNG\r\n\x1a\npage-context"
@@ -124,6 +124,12 @@ class BridgeTests(unittest.TestCase):
 
 
 class CodexTests(unittest.TestCase):
+    def test_failure_diagnostics_do_not_echo_cli_output(self):
+        self.assertEqual(cli_failure_reason('401 unauthorized: PRIVATE_PROMPT'), 'authentication')
+        self.assertEqual(cli_failure_reason('rate limit: PRIVATE_ACCOUNT'), 'usage_limit')
+        self.assertEqual(cli_failure_reason('unexpected PRIVATE_CONTENT'), 'unclassified')
+        self.assertEqual(cli_failure_reason(None), 'unclassified')
+
     def test_page_context_reaches_codex_and_temporary_images_are_removed(self):
         images = []
         def process(command, **kwargs):
@@ -163,9 +169,13 @@ class CodexTests(unittest.TestCase):
 
     def test_ink_layout_bounds(self):
         validate_answer({"lines": ["A short answer"]}, "ink")
-        for lines in ([], ["a"] * 17, ["x" * 57], [42]):
+        for lines in ([], ["a"] * 17, ["x" * 57], [42], ["", "  "]):
             with self.assertRaises(RequestError):
                 validate_answer({"lines": lines}, "ink")
+
+    def test_blank_separators_do_not_discard_a_valid_answer(self):
+        answer = {"lines": ["First paragraph.", "", "  ", "Second paragraph."]}
+        self.assertEqual(validate_answer(answer, "ink"), {"lines": ["First paragraph.", "Second paragraph."]})
 
     def test_native_typing_rejects_controls_and_unmapped_characters(self):
         for text in ("\x1b", "hello\x08", "caf\u00e9"):
@@ -173,7 +183,7 @@ class CodexTests(unittest.TestCase):
                 validate_answer({"text": text}, "text")
 
     def test_ink_completion_selects_draw_answer(self):
-        server = Bridge(0, "t" * 48, mode="ink", runner=lambda *a, **kw: {"lines": ["September 26, 2026"]})
+        server = Bridge(0, "t" * 48, mode="ink", runner=lambda *a, **kw: {"lines": ["September 26, 2026", "", "  "]})
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:

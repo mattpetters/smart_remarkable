@@ -81,6 +81,11 @@ pub fn answer_svgs(lines: &[String], rect: Rect) -> Result<Vec<String>> {
 
 pub async fn draw_status(pen: Arc<Mutex<Pen>>, rect: Rect, status: AnswerStatus) -> Result<()> {
     let svg = status_svg(rect, status)?;
+    // Pending already prepared the pen. Completion/failure must not reopen
+    // its settings menu and send marker strokes into the color controls.
+    if !matches!(status, AnswerStatus::Pending) {
+        return tokio::task::block_in_place(|| pen.lock().map_err(|_| anyhow::anyhow!("Pen lock unavailable"))?.draw_svg_centerline(&svg));
+    }
     // The trigger task holds the shared Touch lock while waiting; use a separate
     // input writer, as the normal answer renderer does.
     let mut touch = Touch::new(false, TriggerCorner::UpperRight);

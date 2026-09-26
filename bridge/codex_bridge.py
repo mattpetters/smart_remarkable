@@ -92,9 +92,30 @@ def validate_answer(answer, mode):
         lines = answer.get("lines")
         if set(answer) != {"lines"} or not isinstance(lines, list) or not 1 <= len(lines) <= MAX_ANSWER_LINES:
             raise RequestError(502, "Codex returned invalid answer lines")
-        if any(not isinstance(s, str) or not s.strip() or len(s) > MAX_LINE_CHARS for s in lines):
+        if any(not isinstance(s, str) or len(s) > MAX_LINE_CHARS for s in lines):
             raise RequestError(502, "Codex answer lines exceed the page layout")
+        # Models can include blank paragraph separators despite the compact
+        # layout prompt. Omit those spacers instead of rejecting a valid answer.
+        lines = [line for line in lines if line.strip()]
+        if not lines:
+            raise RequestError(502, "Codex returned an empty answer")
+        answer = {"lines": lines}
     return answer
+
+
+def cli_failure_reason(stderr):
+    """Classify failures without retaining CLI output or notebook contents."""
+    text = (stderr or "").lower()
+    for markers, reason in (
+        (("unauthorized", "authentication", "401", "login required"), "authentication"),
+        (("rate limit", "usage limit", "quota", "429"), "usage_limit"),
+        (("invalid schema", "invalid_json_schema"), "output_schema"),
+        (("model_not_found", "model is not supported", "model does not exist"), "model_unavailable"),
+        (("connection", "timed out", "stream disconnected"), "connection"),
+    ):
+        if any(marker in text for marker in markers):
+            return reason
+    return "unclassified"
 
 
 def run_codex(prompt, images, *, mode, model, timeout, executable):
@@ -147,6 +168,7 @@ def run_codex(prompt, images, *, mode, model, timeout, executable):
             raise RequestError(503, "Codex executable is unavailable") from None
         if result.returncode or not output.exists():
             # CLI logs can contain prompt/image content or account details; do not serve them.
+            print(f"Codex process failed: exit={result.returncode}, reason={cli_failure_reason(result.stderr)}", flush=True)
             raise RequestError(502, "Codex failed; check codex login status and model availability on the Mac")
         try:
             answer = json.loads(output.read_text())
@@ -224,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 answer = server.runner(prompt, images, mode=server.mode, model=server.model,
                                        timeout=server.timeout_seconds, executable=server.executable)
-                validate_answer(answer, server.mode)
+                answer = validate_answer(answer, server.mode)
             finally:
                 server.inference_lock.release()
             self.reply(200, {"id": "remarkable-" + str(time.time_ns()), "object": "chat.completion",
@@ -235,6 +257,9 @@ class Handler(BaseHTTPRequestHandler):
                                          "name": tool, "arguments": json.dumps(answer)}}]}}]})
             print(f"Answered selection in {time.monotonic() - started:.1f}s ({server.mode})", flush=True)
         except RequestError as e:
+            # RequestError messages are fixed descriptions generated here, not
+            # upstream output. Log the failure category, never request bodies.
+            print(f"Request failed in {time.monotonic() - started:.1f}s: HTTP {e.status}: {e.message}", flush=True)
             self.reply(e.status, {"error": {"message": e.message}})
         except (TimeoutError, ConnectionError):
             self.close_connection = True
