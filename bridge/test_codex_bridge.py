@@ -11,6 +11,7 @@ import urllib.request
 from codex_bridge import Bridge, PNG_PREFIX, RequestError, run_codex, selection_input, validate_answer
 
 PNG = b"\x89PNG\r\n\x1a\nfixture"
+PAGE = b"\x89PNG\r\n\x1a\npage-context"
 
 
 def request_body():
@@ -53,7 +54,28 @@ class BridgeTests(unittest.TestCase):
         call = body["choices"][0]["message"]["tool_calls"][0]["function"]
         self.assertEqual(call["name"], "draw_text")
         self.assertEqual(json.loads(call["arguments"]), {"text": "Four."})
-        self.assertEqual(self.calls[0][1], PNG)
+        self.assertEqual(self.calls[0][1], [PNG])
+
+    def test_selection_and_page_keep_their_order_without_carrying_old_context(self):
+        body = request_body()
+        body["messages"][0]["content"].extend([
+            {"type": "text", "text": "Image 2: visible page context"},
+            {"type": "image_url", "image_url": {"url": PNG_PREFIX + base64.b64encode(PAGE).decode()}},
+        ])
+        self.assertEqual(self.post(body)[0], 200)
+        self.assertEqual(self.calls[-1][1], [PNG, PAGE])
+        self.assertEqual(self.post(request_body())[0], 200)
+        self.assertEqual(self.calls[-1][1], [PNG])
+
+    def test_rejects_extra_or_remote_context_images(self):
+        body = request_body()
+        image = body["messages"][0]["content"][1]
+        body["messages"][0]["content"].extend([image, image])
+        self.assertEqual(self.post(body)[0], 400)
+        body = request_body()
+        body["messages"][0]["content"].append({"type": "image_url", "image_url": {"url": "https://example.com/page.png"}})
+        self.assertEqual(self.post(body)[0], 400)
+        self.assertFalse(self.calls)
 
     def test_rejects_bad_auth_before_inference(self):
         self.assertEqual(self.post(request_body(), "wrong")[0], 401)
@@ -102,6 +124,21 @@ class BridgeTests(unittest.TestCase):
 
 
 class CodexTests(unittest.TestCase):
+    def test_page_context_reaches_codex_and_temporary_images_are_removed(self):
+        images = []
+        def process(command, **kwargs):
+            images.extend(Path(command[i + 1]) for i, arg in enumerate(command) if arg == "--image")
+            self.assertEqual([path.read_bytes() for path in images], [PNG, PAGE])
+            self.assertIn("previous assistant responses", kwargs["input"])
+            self.assertIn("off-screen", kwargs["input"])
+            self.assertIn("--ephemeral", command)
+            output = Path(command[command.index("--output-last-message") + 1])
+            output.write_text('{"lines":["Basil and mint."]}')
+            return subprocess.CompletedProcess(command, 0)
+        with patch("codex_bridge.subprocess.run", side_effect=process):
+            run_codex("Continue the visible conversation", [PNG, PAGE], mode="ink", model="test", timeout=12, executable="codex")
+        self.assertTrue(all(not path.exists() for path in images))
+
     def test_subprocess_uses_image_schema_stdin_and_read_only(self):
         def process(command, **kwargs):
             self.assertIsInstance(command, list)
@@ -115,18 +152,18 @@ class CodexTests(unittest.TestCase):
             output.write_text('{"text":"Four."}')
             return subprocess.CompletedProcess(command, 0)
         with patch("codex_bridge.subprocess.run", side_effect=process):
-            result = run_codex("Answer", PNG, mode="text", model="test", timeout=12, executable="codex")
+            result = run_codex("Answer", [PNG], mode="text", model="test", timeout=12, executable="codex")
         self.assertEqual(result, {"text": "Four."})
 
     def test_timeout_becomes_gateway_timeout(self):
         with patch("codex_bridge.subprocess.run", side_effect=subprocess.TimeoutExpired("codex", 1)):
             with self.assertRaises(RequestError) as raised:
-                run_codex("Answer", PNG, mode="text", model=None, timeout=1, executable="codex")
+                run_codex("Answer", [PNG], mode="text", model=None, timeout=1, executable="codex")
         self.assertEqual(raised.exception.status, 504)
 
     def test_ink_layout_bounds(self):
         validate_answer({"lines": ["A short answer"]}, "ink")
-        for lines in ([], ["a"] * 9, ["x" * 41], [42]):
+        for lines in ([], ["a"] * 17, ["x" * 57], [42]):
             with self.assertRaises(RequestError):
                 validate_answer({"lines": lines}, "ink")
 

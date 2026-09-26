@@ -20,11 +20,10 @@ pub fn get_uinput_module_data(version: &str) -> Option<Vec<u8>> {
 }
 
 /// The bundled fonts used for drawn answers, so rendering doesn't depend on
-/// whatever fonts happen to be installed on the device: a handwriting-style
-/// font for Latin text, and a plain, clear sans font for Chinese (legibility
-/// over style, since a stylized/cursive Chinese font reads poorly).
+/// whatever fonts happen to be installed on the device. Latin answers use
+/// IBM Plex Mono; Patrick Hand remains available for older SVG prompts.
 pub fn get_answer_font_data() -> Vec<Vec<u8>> {
-    ["PatrickHand-Regular.ttf", "NotoSansSC-Regular.ttf"]
+    ["IBMPlexMono-Regular.ttf", "PatrickHand-Regular.ttf", "NotoSansSC-Regular.ttf"]
         .iter()
         .map(|name| AssetFonts::get(name).unwrap_or_else(|| panic!("bundled {name} font asset is missing")).data.to_vec())
         .collect()

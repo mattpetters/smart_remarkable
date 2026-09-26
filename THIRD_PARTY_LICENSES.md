@@ -305,3 +305,12 @@ PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGES.
 
                      END OF TERMS AND CONDITIONS
+
+
+## IBM Plex Mono
+
+`assets/fonts/IBMPlexMono-Regular.ttf` is an unmodified IBM Plex Mono font from
+[Google Fonts](https://github.com/google/fonts/tree/main/ofl/ibmplexmono).
+Copyright 2017 IBM Corp., with Reserved Font Name Plex. Licensed under the
+[SIL Open Font License 1.1](assets/fonts/IBMPlexMono-OFL.txt), included alongside
+the font and embedded in the binary with the font assets.

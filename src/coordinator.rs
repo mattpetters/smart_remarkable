@@ -6,9 +6,11 @@ use tokio::sync::{mpsc, watch, Mutex as TokioMutex};
 use tokio::time::{sleep, Duration};
 
 use crate::cancellation::SmartRemarkableCancellation;
+use crate::answer_ui::{draw_status, AnswerStatus};
 use crate::config::Config;
 use crate::embedded_assets::load_config;
 use crate::keyboard::Keyboard;
+use crate::pen::Pen;
 use crate::llm_engine::{LLMEngine, ModelExecutionStatus};
 use crate::screenshot::Screenshot;
 use crate::segmenter::ImageAnalyzer;
@@ -84,6 +86,52 @@ impl CoordinatorChannels {
 impl Default for CoordinatorChannels {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Consume extra gestures as they arrive while a request is active. Keeping the
+/// receiver drained prevents a burst from blocking the listener and replaying
+/// buffered sends after the answer finishes.
+pub async fn finish_processing<T>(
+    mut processing: tokio::task::JoinHandle<T>,
+    triggers: &mut mpsc::Receiver<TriggerEvent>,
+) -> std::result::Result<T, tokio::task::JoinError> {
+    let result = loop {
+        tokio::select! {
+            result = &mut processing => break result,
+            Some(_) = triggers.recv() => info!("Ignoring trigger: an answer is already in progress"),
+        }
+    };
+    while triggers.try_recv().is_ok() {
+        info!("Ignoring trigger received during processing");
+    }
+    result
+}
+
+#[cfg(test)]
+mod trigger_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn discards_bursts_while_busy_and_accepts_next_idle_trigger() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let processing = tokio::spawn(async move { finish_rx.await.unwrap() });
+        let sender = tx.clone();
+        let burst = tokio::spawn(async move {
+            // More than the channel capacity: the producer must not stay
+            // blocked until completion and leak a deferred request afterward.
+            for _ in 0..100 {
+                sender.send(TriggerEvent::WebTrigger).await.unwrap();
+            }
+            finish_tx.send(42).unwrap();
+        });
+        let result = tokio::time::timeout(Duration::from_secs(2), finish_processing(processing, &mut rx)).await.unwrap().unwrap();
+        assert_eq!(result, 42);
+        burst.await.unwrap();
+        assert!(rx.try_recv().is_err());
+        tx.send(TriggerEvent::WebTrigger).await.unwrap();
+        assert!(matches!(rx.recv().await, Some(TriggerEvent::WebTrigger)));
     }
 }
 
@@ -347,8 +395,8 @@ fn auto_placement(sel: Rect) -> Rect {
     // of the page; fit_svg_to_rect anchors at the top and only uses what the
     // answer needs, so long answers keep a legible size instead of being
     // squeezed into a fixed-height box.
-    let w = (sel.w * 3 / 2).clamp(300, SCREEN_W - 2 * MARGIN);
-    let x = sel.x.clamp(MARGIN, SCREEN_W - MARGIN - w);
+    let x = sel.x.clamp(MARGIN, SCREEN_W - MARGIN - 300);
+    let w = SCREEN_W - MARGIN - x;
     let below_y = sel.y + sel.h + GAP;
     let space_below = SCREEN_H - MARGIN - below_y;
     let (y, h) = if space_below >= 160 {
@@ -371,6 +419,8 @@ pub async fn processing_task(
     placement_slot: Arc<Mutex<Option<Rect>>>,
     selection_slot: Arc<Mutex<Option<Rect>>>,
     input_image_slot: Arc<Mutex<Option<String>>>,
+    pen: Arc<Mutex<Pen>>,
+    answer_marker_slot: Arc<Mutex<Option<Rect>>>,
     trigger_source: TriggerSource,
 ) -> Result<()> {
     info!("Processing task: starting");
@@ -380,9 +430,34 @@ pub async fn processing_task(
     let _ = progress_tx.send(ProgressState::TakingScreenshot);
     tokio::time::sleep(Duration::from_millis(10)).await; // Give progress_task time
 
+    // Load prompt. The Draw button overrides the normal select-mode prompt
+    // with prompts/draw.json regardless of --prompt/config.prompt, since it's
+    // a distinct action (sketch/refine) from the LLM button's Q&A behavior.
+    let prompt_name = if config.select_mode && trigger_source == TriggerSource::DrawButton {
+        // With an image-generation model configured, the LLM plans the
+        // drawing (prompt-writing) instead of authoring SVG itself
+        if config.image_model.is_some() {
+            "draw_image.json".to_string()
+        } else {
+            "draw.json".to_string()
+        }
+    } else {
+        config.prompt.clone()
+    };
+    let prompt_general_raw = load_config(&prompt_name);
+    let prompt_general_json = serde_json::from_str::<serde_json::Value>(prompt_general_raw.as_str())?;
+    let mut prompt = prompt_general_json["prompt"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Prompt file '{}' missing required 'prompt' field", prompt_name))?
+        .to_string();
+
+    let include_page_context = prompt_general_json["include_page_context"].as_bool().unwrap_or(false);
+    let show_answer_status = prompt_general_json["answer_status_marker"].as_bool().unwrap_or(false);
+
     // Take screenshot
     let screenshot_path = config.save_screenshot.clone();
     let mut selection = selection;
+    let mut page_context = None;
     let base64_image = if let Some(input_png) = &config.input_png {
         BASE64_STANDARD.encode(std::fs::read(input_png)?)
     } else {
@@ -416,6 +491,11 @@ pub async fn processing_task(
         }
 
         if let Some((selection_rect, _)) = &selection {
+            if include_page_context {
+                // Both images come from this capture, before any status ink or
+                // UI interaction. Never recapture a different page as context.
+                page_context = Some(screenshot.base64()?);
+            }
             screenshot.base64_cropped(*selection_rect)?
         } else {
             screenshot.base64()?
@@ -485,38 +565,46 @@ pub async fn processing_task(
         None
     };
 
-    // Load prompt. The Draw button overrides the normal select-mode prompt
-    // with prompts/draw.json regardless of --prompt/config.prompt, since it's
-    // a distinct action (sketch/refine) from the LLM button's Q&A behavior.
-    let prompt_name = if config.select_mode && trigger_source == TriggerSource::DrawButton {
-        // With an image-generation model configured, the LLM plans the
-        // drawing (prompt-writing) instead of authoring SVG itself
-        if config.image_model.is_some() {
-            "draw_image.json".to_string()
-        } else {
-            "draw.json".to_string()
-        }
-    } else {
-        config.prompt.clone()
-    };
-    let prompt_general_raw = load_config(&prompt_name);
-    let prompt_general_json = serde_json::from_str::<serde_json::Value>(prompt_general_raw.as_str())?;
-    let mut prompt = prompt_general_json["prompt"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Prompt file '{}' missing required 'prompt' field", prompt_name))?
-        .to_string();
-
     // Add segmentation to prompt if available
     if let Some(seg_desc) = segmentation_description {
         prompt.push_str("\n\nImage Analysis:\n");
         prompt.push_str(&seg_desc);
     }
+    if show_answer_status {
+        if let Some((_, rect)) = selection {
+            let max_lines = ((rect.h - 34) / 31).clamp(1, 16);
+            let max_chars = (((rect.w - 28) as f32 / 13.2).floor() as i32).clamp(12, 52);
+            prompt.push_str(&format!("\nReply layout: use at most {max_lines} lines, each at most {max_chars} characters. Keep the answer concise, but include useful detail that fits."));
+        }
+    }
 
     // Prepare engine
     let mut engine_guard = engine.lock().await;
     engine_guard.clear_content();
+    if page_context.is_some() {
+        engine_guard.add_text_content("Image 1: selected handwriting, the latest user question.");
+    }
     engine_guard.add_image_content(&base64_image);
+    if let Some(page) = &page_context {
+        engine_guard.add_text_content("Image 2: surrounding visible page, including earlier user notes and AI replies. Off-screen content is not included.");
+        engine_guard.add_image_content(page);
+    }
     engine_guard.add_text_content(&prompt);
+    info!("Request context: selected image, visible page included={}", page_context.is_some());
+
+    if show_answer_status && !config.no_draw && !config.is_test_mode() {
+        if let Some((_, rect)) = selection {
+            match draw_status(Arc::clone(&pen), rect, AnswerStatus::Pending).await {
+                Ok(()) => {
+                    info!("Request pending marker drawn");
+                    if let Ok(mut slot) = answer_marker_slot.lock() {
+                        *slot = Some(rect);
+                    }
+                }
+                Err(error) => info!("Could not draw request status: {}", error),
+            }
+        }
+    }
 
     // Create status callback that wraps model execution status in LlmState
     let progress_tx_clone = progress_tx.clone();
@@ -527,6 +615,15 @@ pub async fn processing_task(
     // Execute LLM with proper error handling
     info!("Processing task: calling LLM");
     let execution_result = engine_guard.execute(&cancellation, status_callback).await;
+
+    // A successful draw_answer consumes this slot and checks the box. An API
+    // error or response without a rendered answer leaves it pending: cross it.
+    let pending = answer_marker_slot.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(rect) = pending {
+        if let Err(error) = draw_status(Arc::clone(&pen), rect, AnswerStatus::Failed).await {
+            info!("Could not update failed request marker: {}", error);
+        }
+    }
 
     // Write model output if configured
     if let Some(model_output_file) = &config.model_output_file {

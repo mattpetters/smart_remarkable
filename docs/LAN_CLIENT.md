@@ -1,19 +1,27 @@
 # Paper Pro + Codex on a Mac
 
 This fork adds an initial handwriting-to-Codex path. The existing tablet app
-captures a lassoed selection, a Python bridge on the Mac calls its authenticated
-Codex CLI, and the tablet traces the answer with its pen tool using a
-handwriting-style font. The response is ordinary movable, erasable ink.
+captures a lassoed selection together with its surrounding visible page, a Python
+bridge on the Mac calls its authenticated Codex CLI, and the tablet traces the
+answer with its pen tool using compact IBM Plex Mono lettering. The response is ordinary movable, erasable ink.
 Codex inference still uses the cloud service associated with the CLI login.
 No OpenAI API key is required for this route.
 
 ## First iteration
 
 - Native lasso selection, then a four-finger tap.
-- One concise answer, at most eight short lines, returned through `draw_answer`.
+- A concise answer returned through `draw_answer`, with a line/character budget
+  calculated from available space (up to 16 lines and 52 characters per line).
+- An AI label and left margin rule distinguish answers from user handwriting.
+- An empty checkbox appears when a request starts; a check marks a completed
+  answer and a cross marks failure. The marker remains part of the answer ink.
+- Consistent 22px monospaced text and 31px line spacing in virtual screen units;
+  short answers no longer expand to fill the available space.
 - The answer appears line by line below the selection when space permits.
-- Read-only, ephemeral Codex invocations; this is currently question answering,
-  not a persistent coding-agent session.
+- Extra gestures during capture, inference, or drawing are discarded immediately;
+  they do not queue another question. The bridge also rejects concurrent inference.
+- Read-only, ephemeral Codex invocations. The visible page supplies conversation
+  context; there is no hidden session history shared across notebooks.
 - Authenticated HTTP bound to loopback on the Mac, reached through an SSH
   reverse forward bound to loopback on the tablet.
 - Global gesture listener: no notebook ID, title, template, or per-notebook setup.
@@ -70,8 +78,10 @@ The physical lasso + four-finger gesture successfully sent a handwritten questio
 through the Mac's Codex CLI and drew a readable answer beneath it as pen strokes.
 One short-answer run took approximately 9.5 seconds from trigger to completed
 render, including 5.9 seconds in the bridge. This is a single measurement, not a
-latency guarantee. The first answer was legible but oversized; font scale, stroke
-quality, and spacing still need refinement. No notebook images are committed.
+latency guarantee. The first answer was legible but oversized. The newer compact font, status marker,
+and page-context changes have automated coverage and a successful synthetic
+two-image Codex test; physical readability and the new status behavior still need
+feedback on the device. No notebook images are committed.
 
 ## Build and run
 
@@ -90,8 +100,11 @@ scripts/lan-client.sh install-autostart
 
 Write a short question on an open notebook page with blank space beneath it. Select the writing
 with reMarkable's lasso tool, then tap the screen with four fingers. Allow the
-answer to finish before interacting with the notebook. This prototype has no
-on-device busy indicator and does not yet detect every kind of placement collision.
+answer to finish before interacting with the notebook. The checkbox acknowledges
+the request while Codex is thinking and remains pending while the answer is being
+written. This is persistent status ink, not a transient overlay or animation. A
+failed request leaves a crossed box; retry by selecting the question again.
+Placement does not yet detect every collision with existing handwriting.
 
 ```sh
 scripts/lan-client.sh capture   # read-only screenshot diagnostic
@@ -125,7 +138,11 @@ ssh rmpp-wifi 'journalctl -fu smart-remarkable-lan'
 
 The bridge logs elapsed time and response mode, not prompts, screenshots, or
 tokens. Upstream tablet logs are separate; avoid debug-level logging of private
-notebooks. Screenshots are sent to Codex only on a trigger. The standalone
+notebooks. On each trigger, the selected question and surrounding visible-page image are
+sent to Codex together, from the same capture before status ink is drawn. The
+page can provide earlier notes and AI-labeled replies for follow-up questions.
+Zoomed-out or scrolled-off content, other pages, and closed notebooks are not
+included. Temporary bridge images are deleted after the request. The standalone
 `capture` binary reads the display without creating virtual input devices or
 calling an LLM.
 
@@ -142,6 +159,11 @@ docker run --rm --platform linux/arm64 \
 
 The bridge tests cover authorization, malformed requests, remote-image rejection,
 output bounds, timeouts, single-flight inference, and safe CLI argument handling.
+They also verify selection/page ordering, no context carried into a subsequent
+request, and cleanup of temporary images. Rendering tests check marker/text
+separation, checkbox update bounds, and compact short/long answer layouts.
+The trigger test sends a burst larger than the event queue and verifies that none
+is replayed after completion, while a subsequent idle trigger is accepted.
 Service tests cover adopting a running request, reconnecting without restarting
 the listener, recovering a rebooted tablet, preserving credentials, stopping
 autostart, and credential migration. Recovery checks do not capture the screen, submit questions, or replay previous requests.
@@ -158,8 +180,10 @@ and out-of-range coordinates.
 
 1. Refine the handwriting-style ink rendering and answer placement; separately
    implement the firmware's native editable-text flow.
-2. Add a visible busy state, cancellation, collision-aware placement, and
-   concise/long-answer controls.
+2. Refine the visible status marker; add cancellation, collision-aware placement,
+   page-change detection, and concise/long-answer controls.
+   Full document context, including off-screen writing, requires document-aware
+   capture beyond the current visible-page screenshot.
 3. Validate the XOVI selection-menu button on the actual firmware.
 4. Add adapters for Claude Code, pi, and Hermes with explicit session and
    action permissions. Add a configured direct-cloud fallback for requests made

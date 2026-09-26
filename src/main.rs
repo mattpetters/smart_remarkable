@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use smart_remarkable::{
+    answer_ui::{answer_svgs, status_svg, AnswerStatus},
     cancellation::SmartRemarkableCancellation,
     config::Config,
     coordinator::{self, CoordinatorChannels, ProgressState},
@@ -23,7 +24,7 @@ use smart_remarkable::{
     status::SmartRemarkableStatus,
     touch::{PenTool, Rect, Touch, TriggerCorner, TriggerSource},
     util::{
-        build_svg_from_lines, fit_lines_to_rect, fit_svg_to_rect, image_to_ink_bitmap, setup_uinput, svg_to_bitmap, upscale_png_b64,
+        fit_svg_to_rect, image_to_ink_bitmap, setup_uinput, svg_to_bitmap, upscale_png_b64,
         write_bitmap_to_file, OptionMap,
     },
     web_server::start_web_server,
@@ -637,6 +638,7 @@ async fn run_smart_remarkable_loop(
     // so the image-generation draw tool can attach it to its request when
     // refining an existing sketch
     let input_image_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let answer_marker_slot: Arc<Mutex<Option<Rect>>> = Arc::new(Mutex::new(None));
 
     // Register tools
     register_tools(
@@ -647,6 +649,7 @@ async fn run_smart_remarkable_loop(
         Arc::clone(&placement_slot),
         Arc::clone(&selection_slot),
         Arc::clone(&input_image_slot),
+        Arc::clone(&answer_marker_slot),
         &config,
     )?;
 
@@ -721,6 +724,8 @@ async fn run_smart_remarkable_loop(
                     let placement_slot_clone = Arc::clone(&placement_slot);
                     let selection_slot_clone = Arc::clone(&selection_slot);
                     let input_image_slot_clone = Arc::clone(&input_image_slot);
+                    let pen_clone = Arc::clone(&pen);
+                    let answer_marker_slot_clone = Arc::clone(&answer_marker_slot);
                     tokio::spawn(async move {
                         coordinator::processing_task(
                             config_clone,
@@ -732,6 +737,8 @@ async fn run_smart_remarkable_loop(
                             placement_slot_clone,
                             selection_slot_clone,
                             input_image_slot_clone,
+                            pen_clone,
+                            answer_marker_slot_clone,
                             trigger_source,
                         ).await
                     })
@@ -739,7 +746,7 @@ async fn run_smart_remarkable_loop(
 
                 // Wait for either processing to complete or user to cancel
                 // The cancel_monitor will trigger cancellation which processing_task respects
-                let processing_result = processing_handle.await;
+                let processing_result = coordinator::finish_processing(processing_handle, &mut trigger_rx).await;
 
                 // Cancel the cancel monitor (it may still be waiting)
                 cancellation.cancel_execution();
@@ -766,10 +773,6 @@ async fn run_smart_remarkable_loop(
                     std::process::exit(0);
                 }
 
-                // Drain any triggers that arrived during processing
-                while trigger_rx.try_recv().is_ok() {
-                    info!("Ignoring trigger received during processing");
-                }
             }
 
             // Wait for config changes via watch channel (priority 2)
@@ -822,6 +825,7 @@ fn register_tools(
     placement_slot: Arc<Mutex<Option<Rect>>>,
     selection_slot: Arc<Mutex<Option<Rect>>>,
     input_image_slot: Arc<Mutex<Option<String>>>,
+    answer_marker_slot: Arc<Mutex<Option<Rect>>>,
     config: &Config,
 ) -> Result<()> {
     use serde_json::Value as json;
@@ -1231,10 +1235,8 @@ fn register_tools(
         // draw_answer: structured content, no LLM-computed coordinates. Fixes
         // the garbled/overlapping-text bug caused by relying on the model to
         // do its own line-spacing arithmetic (see prompts/selection.json).
-        // Lines are drawn one at a time with a pause in between, so the
-        // answer appears progressively rather than all at once — both a
-        // nicer effect and visible proof it's still working.
-        const LINE_PAUSE: Duration = Duration::from_millis(450);
+        // Pen strokes already appear progressively. Avoid an additional
+        // artificial delay between lines.
 
         let tool_config_draw_answer = load_config("tool_draw_answer.json");
         engine.register_tool(
@@ -1256,13 +1258,18 @@ fn register_tools(
                 }
 
                 let placement = placement_slot.lock().ok().and_then(|mut slot| slot.take());
-                let line_svgs = match &placement {
-                    Some(rect) => fit_lines_to_rect(&lines, *rect).unwrap_or_else(|e| {
-                        log::error!("Failed to fit lines to placement box: {}, drawing combined", e);
-                        vec![build_svg_from_lines(&lines)]
-                    }),
-                    None => vec![build_svg_from_lines(&lines)],
+                let rect = placement.unwrap_or(Rect { x: 40, y: 80, w: 688, h: 900 });
+                let mut line_svgs = match answer_svgs(&lines, rect) {
+                    Ok(fragments) => fragments,
+                    Err(error) => {
+                        log::error!("Could not lay out marked answer: {}", error);
+                        return;
+                    }
                 };
+                let pending = answer_marker_slot.lock().ok().and_then(|slot| *slot);
+                if pending != Some(rect) {
+                    line_svgs.insert(0, status_svg(rect, AnswerStatus::Pending).unwrap());
+                }
 
                 let previous_tool = if !no_draw && !test_mode {
                     tokio::task::block_in_place(|| {
@@ -1276,14 +1283,23 @@ fn register_tools(
                     PenTool::Unknown
                 };
 
+                let mut drawn = true;
                 for (i, svg_data) in line_svgs.iter().enumerate() {
-                    if i > 0 {
-                        std::thread::sleep(LINE_PAUSE);
-                    }
                     let mut keyboard = lock!(keyboard);
                     let mut pen = lock!(pen);
                     if let Err(e) = draw_svg(svg_data, &mut keyboard, &mut pen, save_bitmap.as_ref(), no_draw) {
                         log::error!("Failed to draw answer line {}: {}", i, e);
+                        drawn = false;
+                        break;
+                    }
+                }
+
+                let state = if drawn { AnswerStatus::Complete } else { AnswerStatus::Failed };
+                if let Ok(svg) = status_svg(rect, state) {
+                    if let Err(error) = draw_svg(&svg, &mut lock!(keyboard), &mut lock!(pen), None, no_draw) {
+                        log::error!("Could not finish answer marker: {}", error);
+                    } else if let Ok(mut slot) = answer_marker_slot.lock() {
+                        slot.take();
                     }
                 }
 

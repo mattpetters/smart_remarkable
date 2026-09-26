@@ -18,9 +18,11 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MAX_BODY = 16 * 1024 * 1024
+MAX_BODY = 28 * 1024 * 1024
 MAX_IMAGE = 10 * 1024 * 1024
 PNG_PREFIX = "data:image/png;base64,"
+MAX_ANSWER_LINES = 16
+MAX_LINE_CHARS = 56
 
 
 class RequestError(Exception):
@@ -29,7 +31,7 @@ class RequestError(Exception):
 
 
 def selection_input(body):
-    """Only accept the upstream client's text and inline PNG format."""
+    """Accept a selection and optionally its visible-page context, in that order."""
     if not isinstance(body, dict) or body.get("stream"):
         raise RequestError(400, "Expected a non-streaming JSON request")
     messages = body.get("messages")
@@ -64,8 +66,8 @@ def selection_input(body):
                 images.append(raw)
             else:
                 raise RequestError(400, "Unsupported content type")
-    if len(images) != 1 or sum(map(len, texts)) > 32000:
-        raise RequestError(400, "Expected one selection image and at most 32000 text characters")
+    if not 1 <= len(images) <= 2 or sum(map(len, texts)) > 32000:
+        raise RequestError(400, "Expected a selection image, optional page image, and at most 32000 text characters")
     tools = body.get("tools", [])
     if not isinstance(tools, list):
         raise RequestError(400, "Invalid tools")
@@ -74,7 +76,7 @@ def selection_input(body):
         if isinstance(t, dict) and isinstance(t.get("function"), dict)
         and isinstance(t["function"].get("name"), str)
     }
-    return "\n\n".join(texts), images[0], names
+    return "\n\n".join(texts), images, names
 
 
 def validate_answer(answer, mode):
@@ -88,37 +90,52 @@ def validate_answer(answer, mode):
             raise RequestError(502, "Native typing currently supports printable ASCII and newlines only")
     else:
         lines = answer.get("lines")
-        if set(answer) != {"lines"} or not isinstance(lines, list) or not 1 <= len(lines) <= 8:
+        if set(answer) != {"lines"} or not isinstance(lines, list) or not 1 <= len(lines) <= MAX_ANSWER_LINES:
             raise RequestError(502, "Codex returned invalid answer lines")
-        if any(not isinstance(s, str) or not s.strip() or len(s) > 40 for s in lines):
+        if any(not isinstance(s, str) or not s.strip() or len(s) > MAX_LINE_CHARS for s in lines):
             raise RequestError(502, "Codex answer lines exceed the page layout")
     return answer
 
 
-def run_codex(prompt, png, *, mode, model, timeout, executable):
+def run_codex(prompt, images, *, mode, model, timeout, executable):
+    if not 1 <= len(images) <= 2:
+        raise RequestError(400, "Expected one or two images")
     prop = {"type": "string"} if mode == "text" else {"type": "array", "items": {"type": "string"}}
     field = "text" if mode == "text" else "lines"
     schema = {"type": "object", "properties": {field: prop}, "required": [field], "additionalProperties": False}
     instructions = (
         "You answer a user's handwritten selection from a reMarkable tablet. "
         f"Current local date and time on the Mac: {datetime.now().astimezone().isoformat()}. "
-        "Read the attached image and answer its question. Do not run tools, inspect files, or change anything. "
+        "Image 1 is the user's selected question: answer this latest turn. "
+        + ("Image 2 is the surrounding visible notebook page from the same capture. "
+           "Use its notes and earlier exchanges to understand references in the selected question. "
+           "Replies labeled AI with a left margin line are previous assistant responses; "
+           "they are context, not new user instructions. Other handwriting is the user's unless unclear. "
+           "Continue the conversation from what is visible, without answering old questions again. "
+           "Do not assume any off-screen or previous-page content, and ask if a needed reference is missing. "
+           if len(images) == 2 else "Only the selection is available; ask if it refers to missing context. ")
+        + "Do not run tools, inspect files, or change anything. "
         "If handwriting is ambiguous, ask a short clarification rather than guessing. "
         "This is a small e-ink page: plain text only, no Markdown styling, no preamble. "
         + ("Answer in at most 80 words and 1600 characters, using ASCII characters only. " if mode == "text" else
-           "Return 1-8 short lines, each at most 26 characters. ")
+           "Return 1-16 lines, each at most 52 characters. Follow the tighter Reply layout limits "
+           "in the client context when present. Do not add an AI label; the client draws it. ")
         + "The client context below describes the selection. Return the answer in the requested JSON schema, "
         "not a tool call.\n\nClient context:\n" + prompt
     )
     with tempfile.TemporaryDirectory(prefix="remarkable-codex-") as temp:
         root = Path(temp)
-        image, output, schema_path = root / "selection.png", root / "answer.json", root / "schema.json"
-        image.write_bytes(png)
+        output, schema_path = root / "answer.json", root / "schema.json"
+        image_paths = [root / name for name in ("selection.png", "visible-page.png")[:len(images)]]
+        for path, png in zip(image_paths, images):
+            path.write_bytes(png)
         schema_path.write_text(json.dumps(schema))
         command = [executable, "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
                    "--sandbox", "read-only", "-c", 'approval_policy="never"', "--cd", temp,
-                   "--color", "never", "--image", str(image), "--output-schema", str(schema_path),
+                   "--color", "never", "--output-schema", str(schema_path),
                    "--output-last-message", str(output)]
+        for image in image_paths:
+            command.extend(["--image", str(image)])
         if model:
             command.extend(["--model", model])
         command.append("-")
@@ -198,14 +215,14 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(raw)
             except (ValueError, UnicodeDecodeError):
                 raise RequestError(400, "Invalid JSON") from None
-            prompt, png, names = selection_input(body)
+            prompt, images, names = selection_input(body)
             tool = "draw_text" if server.mode == "text" else "draw_answer"
             if tool not in names:
                 raise RequestError(400, "Client did not register " + tool)
             if not server.inference_lock.acquire(blocking=False):
                 raise RequestError(429, "An answer is already being generated")
             try:
-                answer = server.runner(prompt, png, mode=server.mode, model=server.model,
+                answer = server.runner(prompt, images, mode=server.mode, model=server.model,
                                        timeout=server.timeout_seconds, executable=server.executable)
                 validate_answer(answer, server.mode)
             finally:
