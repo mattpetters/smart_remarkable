@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
         // Deliberately start near the bottom so the rest must use another page.
         draw_complete_answer(
             &lines,
+            &[],
             Rect { x: 64, y: 780, w: 694, h: 190 },
             Arc::new(Mutex::new(Pen::new(false))),
             Arc::new(Mutex::new(None)),

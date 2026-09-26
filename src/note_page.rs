@@ -38,6 +38,13 @@ fn selecting(ss: &Screenshot) -> bool {
     overview(ss) && [100, 250, 400, 510].iter().all(|&x| dark(ss, x, 20))
 }
 
+fn insertion_menu(ss: &Screenshot) -> bool {
+    // The selected thumbnail was verified before opening More. Its popover
+    // covers the top-right thumbnail's border, so verify the selection toolbar
+    // and the actual insertion control here instead of the obscured thumbnail.
+    selecting(ss) && add_after(ss)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Tile {
     x: u32,
@@ -136,11 +143,7 @@ impl Ui<'_> {
         sleep(Duration::from_millis(1000)).await;
         self.wait_for("selected thumbnail", |screen| selected_tile(screen, original)).await?;
         self.tap((738, 26)).await?;
-        let menu = self.wait_for("Add page after menu", add_after).await?;
-        ensure!(
-            selected_tile(&menu, original) && add_after(&menu),
-            "Add page after control was not recognized"
-        );
+        self.wait_for("Add page after menu", insertion_menu).await?;
         self.tap((688, 185)).await?; // exactly one creation attempt
         self.wait_for("inserted page selection", selecting).await?;
         self.tap((38, 27)).await?; // cancel selection, keeping the new current page
@@ -268,5 +271,37 @@ mod tests {
         assert!(add_after(&ss));
         assert!(!control_matches(&ss, OVERVIEW, 17, 70));
         assert!(!control_matches(&ss, ADD_AFTER, 620, 171));
+    }
+
+    #[test]
+    fn insertion_menu_accepts_an_occluded_top_right_thumbnail_only_in_selection_mode() {
+        let tile = Tile { x: 640, y: 268, w: 109 };
+        let ss = fixture(false, true);
+        let mut img = image::RgbImage::from_fn(768, 1024, |x, y| {
+            let (r, g, b) = ss.get_pixel(x, y).unwrap();
+            image::Rgb([r, g, b])
+        });
+        for y in 118..276 {
+            for x in [tile.x - 5, tile.x + tile.w + 5] {
+                img.put_pixel(x, y, image::Rgb([0; 3]));
+            }
+        }
+        let screen = |img: &image::RgbImage| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(img.clone()).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            Screenshot::from_png_data(bytes.into_inner())
+        };
+        assert!(selected_tile(&screen(&img), tile));
+        // More's opaque popover hides every border sample for page six.
+        for y in 53..265 {
+            for x in 607..764 { img.put_pixel(x, y, image::Rgb([255; 3])); }
+        }
+        let control = image::load_from_memory(ADD_AFTER_REGISTERED).unwrap().to_rgb8();
+        image::imageops::overlay(&mut img, &control, 620, 171);
+        assert!(!selected_tile(&screen(&img), tile));
+        assert!(insertion_menu(&screen(&img)));
+        // A matching menu label alone must never authorize page insertion.
+        img.put_pixel(250, 20, image::Rgb([255; 3]));
+        assert!(!insertion_menu(&screen(&img)));
     }
 }
