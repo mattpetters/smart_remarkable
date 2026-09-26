@@ -16,7 +16,9 @@ No OpenAI API key is required for this route.
   not a persistent coding-agent session.
 - Authenticated HTTP bound to loopback on the Mac, reached through an SSH
   reverse forward bound to loopback on the tablet.
-- No XOVI installation, firmware changes, or boot-time service installation.
+- Global gesture listener: no notebook ID, title, template, or per-notebook setup.
+- Optional Mac login service restores the bridge, SSH tunnel, and tablet listener.
+- No XOVI installation or firmware changes.
 - Paper Pro Move is not yet supported by the device geometry in this fork.
 
 Native editable text (`REMARKABLE_RESPONSE_MODE=text`) is experimental and not
@@ -35,6 +37,28 @@ ink below the question. Answers are persistent notebook edits.
 - A working `rmpp-wifi` SSH alias, or `REMARKABLE_HOST` set to another alias.
 - Python 3, Docker, and Codex CLI on the Mac. `codex login status` must succeed.
 - The Mac must remain awake and connected while requests run.
+
+## Availability requirements
+
+1. The assistant is available in any open notebook. Selection is read from the
+   current screen on each trigger; it is never bound to a particular notebook.
+2. It stays available without manually starting a development session. The Mac
+   supervisor starts at login, repairs dropped SSH connections, restarts a failed
+   bridge, and recreates the tablet listener after a tablet reboot. Healthy
+   processes are adopted without interrupting an answer already in progress.
+3. Eventually, direct cloud fallback must cover a sleeping or absent Mac. That
+   backend and its credential routing are not implemented yet. Today the Mac must
+   be awake, logged in, reachable on the LAN, and authenticated with Codex.
+
+Recovery checks run every 15 seconds while healthy and every 30 seconds after a
+failure; connection timeouts can add delay. This is automatic recovery, not a
+guarantee of zero downtime. Failed prompts are never replayed automatically. Retry
+the gesture once the connection returns. Keep the same page open while an answer
+is pending; page-change detection is still a separate UX requirement.
+
+The global listener is implemented independently of notebooks. Different
+templates, zoom, orientation, and selection/placement edge cases still need
+physical testing; one successful notebook test does not validate all layouts.
 
 The tested hardware is `ferrari 1.0`, aarch64, firmware `3.27.3.0`, Qt `6.8.2`,
 with `/dev/uinput` already provided by the kernel. Verify separately after any
@@ -60,28 +84,42 @@ scripts/lan-client.sh deploy
 export REMARKABLE_CODEX_MODEL=YOUR_MODEL_ID
 scripts/lan-client.sh start
 scripts/lan-client.sh status
+# Keep it available after Mac login, reconnection, or a tablet restart:
+scripts/lan-client.sh install-autostart
 ```
 
-Write a short question near the top of a new notebook page. Select the writing
+Write a short question on an open notebook page with blank space beneath it. Select the writing
 with reMarkable's lasso tool, then tap the screen with four fingers. Allow the
 answer to finish before interacting with the notebook. This prototype has no
 on-device busy indicator and does not yet detect every kind of placement collision.
 
 ```sh
 scripts/lan-client.sh capture   # read-only screenshot diagnostic
-scripts/lan-client.sh stop      # stop tablet worker, SSH tunnel, and Mac bridge
+scripts/lan-client.sh stop      # also disables automatic recovery until start
+scripts/lan-client.sh uninstall-autostart  # stop and remove the login service
 ```
 
-The `start` command does not launch on boot. It creates a transient systemd unit
-named `smart-remarkable-lan` and leaves the normal reMarkable UI running. Local
-runtime files live under the gitignored `tmp/lan-client/` directory. Tablet
-files live under `/home/root/smart-remarkable/`. Keep the runtime directory private;
-it includes the bridge bearer token and diagnostic screenshots.
+`install-autostart` creates `~/Library/LaunchAgents/com.smart-remarkable.lan-client.plist`.
+It runs after Mac login, independently of Codex desktop or an open terminal. The
+tablet unit remains transient; the supervisor recreates it when the tablet returns.
+New units also use systemd restart-on-failure. The normal reMarkable UI stays running.
+`start` is idempotent and re-enables an installed LaunchAgent. Without an installed
+LaunchAgent it starts the components once, without ongoing recovery. If changing
+the host, model, or response mode, stop first and install again with the new
+environment variables. Keep the checkout at its installed path.
+
+Runtime PIDs, socket, status, logs, and captures live in the gitignored
+`tmp/lan-client/` directory. The durable bridge token lives in
+`~/Library/Application Support/Smart Remarkable/bridge.token` with permissions 600;
+the containing directory has permissions 700. The legacy temporary token is
+migrated without rotation so existing requests continue working. Tablet files
+live under `/home/root/smart-remarkable/`.
 
 Logs:
 
 ```sh
 tail -f tmp/lan-client/bridge.log
+tail -f tmp/lan-client/supervisor.log
 ssh rmpp-wifi 'journalctl -fu smart-remarkable-lan'
 ```
 
@@ -104,6 +142,9 @@ docker run --rm --platform linux/arm64 \
 
 The bridge tests cover authorization, malformed requests, remote-image rejection,
 output bounds, timeouts, single-flight inference, and safe CLI argument handling.
+Service tests cover adopting a running request, reconnecting without restarting
+the listener, recovering a rebooted tablet, preserving credentials, stopping
+autostart, and credential migration. Recovery checks do not capture the screen, submit questions, or replay previous requests.
 The original font-render test used its author's absolute output path; it now
 asserts the in-memory bitmap instead.
 
@@ -121,7 +162,8 @@ and out-of-range coordinates.
    concise/long-answer controls.
 3. Validate the XOVI selection-menu button on the actual firmware.
 4. Add adapters for Claude Code, pi, and Hermes with explicit session and
-   action permissions; keep the existing direct API engines as a separate route.
+   action permissions. Add a configured direct-cloud fallback for requests made
+   while the Mac is asleep or away, including visible backend/error state.
 5. Detect Paper Pro Move and implement its display, pen, touch, and layout
    geometry from measurements on that device.
 6. Investigate a terminal view: libghostty-vt plus a Qt/e-ink renderer and SSH
