@@ -17,7 +17,17 @@ No OpenAI API key is required for this route.
   answer and a cross marks failure. The marker remains part of the answer ink.
 - Consistent 22px monospaced text and 31px line spacing in virtual screen units;
   short answers no longer expand to fill the available space.
-- The answer appears line by line below the selection when space permits.
+- The answer appears line by line below the lowest detected writing, including
+  earlier AI replies. It never falls back above the question.
+- When space is tight, the marked-answer prompt pans down the continuous page
+  with two parallel touch contacts and checks the resulting ink movement. It
+  rescans newly revealed writing and reserves space for the full 16-line answer
+  budget. Unverified motion or four unsuccessful pans aborts before drawing.
+- The marked-answer prompt temporarily selects the actual Ballpoint pen type,
+  medium width, and red color. It snapshots the toolbar's selected row and
+  visibility, plus the original pen and Ballpoint profiles. The saved selection
+  is restored generically, including a highlighter or lasso, after success or
+  a normal request/render/cancellation error. Font size and spacing stay unchanged.
 - Extra gestures during capture, inference, or drawing are discarded immediately;
   they do not queue another question. The bridge also rejects concurrent inference.
 - Blank paragraph separators in a model response are omitted instead of rejecting
@@ -38,9 +48,11 @@ menu, and the on-screen keyboard confuses upstream's rotation heuristic. It is
 not the default. Its virtual keyboard currently supports ASCII characters only.
 
 The upstream selection-menu LLM button is a separate XOVI extension. It has
-not been loaded or verified in this iteration. Use a disposable notebook while
-testing placement: the current placement heuristic does not check for existing
-ink below the question. Answers are persistent notebook edits.
+not been loaded or verified in this iteration. Placement scans visible ink and
+filters simple ruled, dotted, and grid templates. Arbitrary templates, faint ink,
+and writing farther down beyond a large blank gap can still defeat this image
+heuristic. Answers are persistent notebook edits; use a disposable notebook for
+initial layout testing.
 
 ## Prerequisites
 
@@ -104,13 +116,17 @@ scripts/lan-client.sh status
 scripts/lan-client.sh install-autostart
 ```
 
-Write a short question on an open notebook page with blank space beneath it. Select the writing
+Write a short question on an open notebook page. Select the writing
 with reMarkable's lasso tool, then tap the screen with four fingers. Allow the
 answer to finish before interacting with the notebook. The checkbox acknowledges
 the request while Codex is thinking and remains pending while the answer is being
 written. This is persistent status ink, not a transient overlay or animation. A
 failed request leaves a crossed box; retry by selecting the question again.
-Placement does not yet detect every collision with existing handwriting.
+The viewport may scroll down before the checkbox appears. The original question
+and visible-page context are captured first; scrolling does not replace those
+images. Failed layout verification stops before submission or answer ink, so it
+cannot leave a failure checkbox; check the tablet journal in that case. Placement
+does not yet detect every collision with existing handwriting.
 
 ```sh
 scripts/lan-client.sh capture   # read-only screenshot diagnostic
@@ -168,8 +184,21 @@ output bounds, timeouts, single-flight inference, and safe CLI argument handling
 They also verify selection/page ordering, no context carried into a subsequent
 request, and cleanup of temporary images. Rendering tests check marker/text
 separation, checkbox update bounds, and compact short/long answer layouts.
+Append-layout tests cover earlier colored answers, faint ink, simple templates,
+full pages, newly revealed content, selection-coordinate translation, stalled
+scrolling, and unrelated blank captures. Automatic scrolling still needs physical
+verification on the current firmware; synthetic viewports do not establish that
+the tablet accepted the gesture.
 The trigger test sends a burst larger than the event queue and verifies that none
 is replayed after completion, while a subsequent idle trigger is accepted.
+Temporary-pen tests cover generic selected rows, hidden toolbars, separate pen
+profiles, successful replies, request failures, partial setup rollback, and
+ambiguous settings detection. The complete settings round trip still needs
+physical-device validation. `examples/check_answer_pen.rs` provides an on-device
+check without drawing ink or calling a model; `--fail` exercises error cleanup.
+Run it only when the gesture listener is stopped and the tablet is not being used.
+The UI reader targets Paper Pro firmware 3.27; an unrecognized settings panel
+aborts setup rather than guessing. Process termination cannot perform UI cleanup.
 Service tests cover adopting a running request, reconnecting without restarting
 the listener, recovering a rebooted tablet, preserving credentials, stopping
 autostart, and credential migration. Recovery checks do not capture the screen, submit questions, or replay previous requests.

@@ -11,9 +11,9 @@ use crate::device::DeviceModel;
 use crate::screenshot::Screenshot;
 use crate::simulation::{SimulationConfig, TouchSimulator};
 
-/// The active pen tool slot in the RMPP xochitl palette.
-/// These correspond to the first two slots in the pen type grid.
-/// Verified palette slot coordinates: Ballpoint=(96,119), Fineliner=(150,119).
+/// Legacy names for the two sidebar pen slots, not guaranteed pen types.
+/// A user can assign calligraphy, a highlighter, or another type to either slot.
+/// `ink_session` explicitly selects the real Ballpoint type for temporary AI ink.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PenTool {
     Ballpoint,
@@ -447,6 +447,63 @@ impl Touch {
         Ok(())
     }
 
+    /// Pan down a continuous page with two parallel contacts. Start well inside
+    /// the canvas (not the bottom-edge page browser), with no pinch or fling.
+    pub async fn scroll_page_down(&mut self) -> Result<()> {
+        let TouchMode::Real { input_device, device_model, .. } = &mut self.mode else {
+            return Ok(());
+        };
+        anyhow::ensure!(*device_model == DeviceModel::RemarkablePaperPro, "Page scrolling currently supports Paper Pro only");
+        let device = input_device.as_mut().ok_or_else(|| anyhow::anyhow!("No touch input writer"))?;
+        let mut start = Vec::new();
+        for (slot, x) in [(0, 310), (1, 430)] {
+            let (x, y) = Self::virtual_to_input((x, 810), device_model);
+            start.extend([
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_SLOT, slot),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TRACKING_ID, 101 + slot),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_POSITION_X, x),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_POSITION_Y, y),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_PRESSURE, 100),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TOUCH_MAJOR, 17),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TOUCH_MINOR, 17),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_ORIENTATION, 4),
+            ]);
+        }
+        start.push(InputEvent::new(EvdevEventType::SYNCHRONIZATION.0, 0, 0));
+        let outcome: Result<()> = async {
+            device.send_events(&start)?;
+            sleep(Duration::from_millis(120)).await;
+            for step in 1..=30 {
+                let mut frame = Vec::new();
+                for (slot, x) in [(0, 310), (1, 430)] {
+                    let (x, y) = Self::virtual_to_input((x, 810 - step * 10), device_model);
+                    frame.extend([
+                        InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_SLOT, slot),
+                        InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_POSITION_X, x),
+                        InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_POSITION_Y, y),
+                    ]);
+                }
+                frame.push(InputEvent::new(EvdevEventType::SYNCHRONIZATION.0, 0, 0));
+                device.send_events(&frame)?;
+                sleep(Duration::from_millis(20)).await;
+            }
+            sleep(Duration::from_millis(180)).await;
+            Ok(())
+        }.await;
+        // Release both contacts even when an intermediate write fails.
+        let released = device.send_events(&[
+            InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_SLOT, 0),
+            InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TRACKING_ID, -1),
+            InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_SLOT, 1),
+            InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TRACKING_ID, -1),
+            InputEvent::new(EvdevEventType::SYNCHRONIZATION.0, 0, 0),
+        ]);
+        outcome?;
+        released?;
+        sleep(Duration::from_millis(700)).await;
+        Ok(())
+    }
+
     // ── Tool palette helpers ────────────────────────────────────────────────
 
     /// Palette toggle button (upper-left circle). Tapping toggles the palette open/closed.
@@ -481,7 +538,7 @@ impl Touch {
     /// Require substantial dark content in the pen-icon area, rather than
     /// mistaking a ruled notebook template for an open toolbar.
     /// When palette is CLOSED, only the toggle circle is visible; y=80 is white canvas.
-    fn screenshot_palette_open(ss: &Screenshot) -> bool {
+    pub(crate) fn screenshot_palette_open(ss: &Screenshot) -> bool {
         // A hidden toolbar exposes the notebook template. A ruled line can
         // contribute a few dark pixels here, so a single pixel is not evidence
         // that the palette is open. Scan the area: a hollow icon may have
@@ -498,7 +555,7 @@ impl Touch {
     /// When the palette is open, the selected tool has a dark (inverted) background
     /// spanning its full ~45px tall icon area. We scan x=5 (just inside the sidebar)
     /// to find the largest contiguous dark band.
-    fn screenshot_selected_tool_y(ss: &Screenshot) -> Option<i32> {
+    pub(crate) fn screenshot_selected_tool_y(ss: &Screenshot) -> Option<i32> {
         // Scan x=5, y=50..500 for dark pixels; find the longest contiguous run.
         let scan_x = 5u32;
         let mut best_run_start = 0i32;
