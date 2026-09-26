@@ -282,6 +282,9 @@ left of the legacy capture. Detection accepts both positions while requiring a
 consistent vertical edge and unambiguous pen, size, and color selections. Tests
 cover both layouts, and an on-device round trip with XOVI enabled verified red
 Ballpoint selection and restoration of both profiles and the original lasso.
+Native page-overview and Add page after controls also have separate reference
+crops for registered capture: removing framebuffer padding changes glyph sampling
+as well as position. Both reference sets retain the same strict match threshold.
 The UI reader targets Paper Pro firmware 3.27; an unrecognized settings panel
 aborts setup rather than guessing. Process termination cannot perform UI cleanup.
 An on-device insertion check created and opened a native PDF note page immediately

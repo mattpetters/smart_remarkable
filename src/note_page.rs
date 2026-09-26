@@ -6,6 +6,8 @@ use tokio::time::{sleep, Duration};
 
 const OVERVIEW: &[u8] = include_bytes!("../assets/ui/page-overview.png");
 const ADD_AFTER: &[u8] = include_bytes!("../assets/ui/add-page-after.png");
+const OVERVIEW_REGISTERED: &[u8] = include_bytes!("../assets/ui/page-overview-registered.png");
+const ADD_AFTER_REGISTERED: &[u8] = include_bytes!("../assets/ui/add-page-after-registered.png");
 
 fn dark(ss: &Screenshot, x: u32, y: u32) -> bool {
     ss.get_pixel(x, y).map(|(r, g, b)| r.max(g).max(b) < 128).unwrap_or(false)
@@ -25,7 +27,11 @@ fn control_matches(ss: &Screenshot, png: &[u8], x: u32, y: u32) -> bool {
 }
 
 fn overview(ss: &Screenshot) -> bool {
-    control_matches(ss, OVERVIEW, 17, 70)
+    control_matches(ss, OVERVIEW, 17, 70) || control_matches(ss, OVERVIEW_REGISTERED, 16, 70)
+}
+
+fn add_after(ss: &Screenshot) -> bool {
+    control_matches(ss, ADD_AFTER, 620, 171) || control_matches(ss, ADD_AFTER_REGISTERED, 620, 171)
 }
 
 fn selecting(ss: &Screenshot) -> bool {
@@ -130,9 +136,9 @@ impl Ui<'_> {
         sleep(Duration::from_millis(1000)).await;
         self.wait_for("selected thumbnail", |screen| selected_tile(screen, original)).await?;
         self.tap((738, 26)).await?;
-        let menu = self.wait_for("Add page after menu", |screen| control_matches(screen, ADD_AFTER, 620, 171)).await?;
+        let menu = self.wait_for("Add page after menu", add_after).await?;
         ensure!(
-            selected_tile(&menu, original) && control_matches(&menu, ADD_AFTER, 620, 171),
+            selected_tile(&menu, original) && add_after(&menu),
             "Add page after control was not recognized"
         );
         self.tap((688, 185)).await?; // exactly one creation attempt
@@ -236,6 +242,31 @@ mod tests {
         assert!(current_tile(&fixture(true, false)).is_err());
         assert!(current_tile(&fixture(false, true)).is_err());
         assert!(selected_tile(&fixture(false, true), tile));
+        assert!(!control_matches(&ss, ADD_AFTER, 620, 171));
+    }
+
+    #[test]
+    fn registered_capture_controls_keep_strict_matching_without_legacy_scaling() {
+        let mut ss = fixture(false, false);
+        let mut img = image::RgbImage::from_fn(768, 1024, |x, y| {
+            let (r, g, b) = ss.get_pixel(x, y).unwrap();
+            image::Rgb([r, g, b])
+        });
+        // Replace only public UI controls, never embed notebook thumbnails.
+        for y in 70..94 {
+            for x in 16..113 { img.put_pixel(x, y, image::Rgb([255; 3])); }
+        }
+        let control = image::load_from_memory(OVERVIEW_REGISTERED).unwrap().to_rgb8();
+        image::imageops::overlay(&mut img, &control, 16, 70);
+        let menu = image::load_from_memory(ADD_AFTER_REGISTERED).unwrap().to_rgb8();
+        image::imageops::overlay(&mut img, &menu, 620, 171);
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        ss = Screenshot::from_png_data(bytes.into_inner());
+        assert!(overview(&ss));
+        assert!(current_tile(&ss).is_ok());
+        assert!(add_after(&ss));
+        assert!(!control_matches(&ss, OVERVIEW, 17, 70));
         assert!(!control_matches(&ss, ADD_AFTER, 620, 171));
     }
 }
