@@ -40,6 +40,15 @@ The tested hardware is `ferrari 1.0`, aarch64, firmware `3.27.3.0`, Qt `6.8.2`,
 with `/dev/uinput` already provided by the kernel. Verify separately after any
 firmware update; screenshot discovery and virtual input depend on vendor internals.
 
+### Verified on hardware, 2026-09-26
+
+The physical lasso + four-finger gesture successfully sent a handwritten question
+through the Mac's Codex CLI and drew a readable answer beneath it as pen strokes.
+One short-answer run took approximately 9.5 seconds from trigger to completed
+render, including 5.9 seconds in the bridge. This is a single measurement, not a
+latency guarantee. The first answer was legible but oversized; font scale, stroke
+quality, and spacing still need refinement. No notebook images are committed.
+
 ## Build and run
 
 From the repository:
