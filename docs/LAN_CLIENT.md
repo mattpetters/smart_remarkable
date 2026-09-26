@@ -260,7 +260,11 @@ scrolling, and unrelated blank captures. A physical run verified one upward pan 
 then stopped before submission when a second pan could not be verified. That
 run exposed overly strict space requirements; regression coverage now includes
 stationary-boundary fallback, three-pixel template dots, and clipboard chrome.
-A complete scrolled answer still needs physical verification.
+A later toolbar-triggered live request verified two consecutive upward pans,
+web research, and all 120 answer lines across the original page and four native
+continuation pages. Completion restored the original pen profiles and active
+tool, released the request wake lock, and returned the listener to idle. The
+final page was visually checked; this does not validate every notebook layout.
 Two later failures identified more specific causes: the native scrollbar was
 being counted as writing, and motion tracking only sampled the lower half of
 the screen. The scan now excludes the narrow scrollbar gutter and registers
