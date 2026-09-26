@@ -20,7 +20,9 @@ The panel closes automatically after five minutes if abandoned.
 
 ## Provider priority and status
 
-Use Up/Down to order the three providers. The first is primary; with **Fallbacks on**, failures advance through the remaining entries once. Tap a model name to cycle the choices configured for that provider in the Mac's `backends.json` (`models` array). **First only** disables provider failover. There is one model choice per provider in this version.
+Use Up/Down to order the three providers. The first is primary; with **Fallbacks on**, failures advance through the remaining entries once. Tap a model name to cycle its choices. The Mac's `backends.json` (`models` array) adds choices to the built-in catalog. **First only** disables provider failover. There is one model choice per provider in this version.
+
+Claude includes `sonnet`, `opus`, `fable`, and `haiku`; these aliases track the installed CLI's recommended releases. The catalog also includes explicit IDs for Sonnet 5, Opus 5.5, Fable 5.1, Fable 5, and Haiku 4.5. Opus 5.5 requires Claude Code 2.1.280 or newer. Access depends on the signed-in account. Fable can use usage credits, including in noninteractive requests; it is available as a choice but is not selected by default. See the [Claude model configuration](https://code.claude.com/docs/en/model-config) and [current model catalog](https://platform.claude.com/docs/en/models/overview).
 
 The pending ink checkbox includes the starting provider and selected model (a CLI alias such as `sonnet` may be shown). A transient toolbar banner reports the current provider/model during inference and disappears before ink delivery. If another provider answers, the reply names that fallback; continuation-page headers use the answering provider. Models still share the same page context, drawing format, red Ballpoint, and tool restoration.
 
@@ -93,7 +95,7 @@ ssh rmpp-wifi '/home/root/smart-remarkable/settings-ui.sh disable'
 ```
 
 The settings schema has automated round-trip, provider/model validation, and duplicate-send
-coverage. The current build passed 57 Python bridge/supervisor tests, 51 Rust tests (50 full-suite checks plus the new preference check), and QML lint with the Qt modules installed. The updated provider-order panel still needs a physical touch check after unlocking the tablet. The firmware 3.27.3.0 resource patches loaded successfully on Paper Pro.
+coverage. The current build passed 58 Python bridge/supervisor tests, 51 Rust tests (50 full-suite checks plus the new preference check), and QML lint with the Qt modules installed. A synthetic native-image request through Claude Haiku returned a valid answer in 4.2 seconds. The updated provider-order panel still needs a physical touch check after unlocking the tablet. The firmware 3.27.3.0 resource patches loaded successfully on Paper Pro.
 Physical toolbar buttons and settings interaction were confirmed on this firmware.
 With XOVI loaded, capture uses its registered framebuffer address and row stride
 instead of relying on allocator layout. Metadata is cached for the lifetime of

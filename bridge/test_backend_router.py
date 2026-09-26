@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_process import read_only_events, run_agent
-from backend_router import route, valid_models, valid_order
+from backend_router import catalog, route, valid_models, valid_order
 from codex_bridge import Bridge, RequestError
 from claude_backend import run_claude
 
@@ -62,6 +62,25 @@ class RoutingTests(unittest.TestCase):
         self.assertTrue(valid_order(['hermes','claude','codex']))
         for models in ({'secret':'x'},{'claude':'--flag'},{'codex':'x\nsecret'},[]): self.assertFalse(valid_models(models))
         self.assertTrue(valid_models({'claude':'sonnet','hermes':'local/model-4bit'}))
+
+    def test_claude_catalog_works_without_private_config_and_preserves_custom_models(self):
+        defaults = catalog(self.server)['claude']
+        self.assertEqual(defaults['model'], 'sonnet')
+        for model in ('fable', 'haiku', 'opus', 'sonnet', 'claude-fable-5-1', 'claude-opus-5-5'):
+            self.assertIn(model, defaults['models'])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'backends.json'
+            self.server.backend_config = config
+            config.write_text(json.dumps({'claude': {'model': 'haiku',
+                'models': ['haiku', 'claude-custom', '--flag', None]}}))
+            result = catalog(self.server)['claude']
+        self.assertEqual(result['model'], 'haiku')
+        self.assertEqual(result['models'][0], 'haiku')
+        self.assertEqual(result['models'].count('haiku'), 1)
+        self.assertIn('claude-custom', result['models'])
+        self.assertIn('fable', result['models'])
+        self.assertNotIn('--flag', result['models'])
+        self.assertNotIn(None, result['models'])
 
     def test_audit_detects_started_actions_and_malformed_events(self):
         events=[{'type':'thread.started'}, {'type':'item.started','item':{'type':'web_search'}}]

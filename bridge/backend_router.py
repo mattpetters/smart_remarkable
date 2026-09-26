@@ -5,6 +5,13 @@ import re
 import time
 
 PROVIDERS = ("codex", "hermes", "claude")
+# Family aliases follow Claude Code's recommended release. Explicit IDs let
+# users pin a version without waiting for a new tablet binary.
+BUILTIN_MODELS = {"claude": (
+    "sonnet", "opus", "fable", "haiku",
+    "claude-sonnet-5", "claude-opus-5-5", "claude-fable-5-1",
+    "claude-fable-5", "claude-haiku-4-5-20251001",
+)}
 
 
 def valid_models(models):
@@ -40,7 +47,8 @@ def catalog(server):
         if not isinstance(choices, list):
             choices = []
         result[provider] = {"model": default, "models": list(dict.fromkeys(
-            [default] + [model for model in choices if valid_models({provider: model})]))}
+            [default] + [model for model in choices if valid_models({provider: model})]
+            + list(BUILTIN_MODELS.get(provider, ()))))}
     return result
 
 
