@@ -32,7 +32,8 @@ No OpenAI API key is required for this route.
   the current page and continues there. Unverified motion aborts before insertion
   or drawing. Bottom UI chrome is excluded.
 - The marked-answer prompt temporarily selects the actual Ballpoint pen type,
-  medium width, and red color. It snapshots the toolbar's selected row and
+  medium width, and the selected answer color (blue by default; red, cyan, and
+  magenta are also available in settings). It snapshots the toolbar's selected row and
   visibility, plus the original pen and Ballpoint profiles. It also captures the
   selected tool's icon so restoration follows tools that move when a PDF note
   page adds a Text tool to the toolbar. The saved selection
@@ -357,7 +358,7 @@ and renders its own SVG. It accepts no model-supplied SVG, code, resource URLs,
 or images in this format. Limits are two illustrations, 64 strokes and 1024
 points per illustration, and 24 labels. Each reserves a 440-pixel-high area,
 including its title and AI marker. Drawings follow the answer in clear space or
-continue on a new native note page. They share red Ballpoint selection, tool
+continue on a new native note page. They share the chosen Ballpoint color, tool
 restoration, completion markers, and the existing no-replay delivery policy.
 
 A synthetic RC step-response image was answered by Codex with five text lines

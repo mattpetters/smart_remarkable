@@ -1,10 +1,11 @@
-//! A temporary red-ballpoint profile, with the user's pen and toolbar restored.
+//! A temporary answer Ballpoint profile, with the user's pen and toolbar restored.
 //! Coordinates are verified on Paper Pro firmware 3.27 in normalized page space.
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use std::future::Future;
 
 use crate::device::DeviceModel;
+use crate::preferences::InkColor;
 use crate::screenshot::Screenshot;
 use crate::touch::{Touch, TriggerCorner};
 
@@ -42,7 +43,16 @@ struct Settings {
 }
 
 // Keep the medium stroke used by the validated compact answer layout.
-const AI: Settings = Settings { kind: 0, size: 1, color: 4 };
+fn answer_settings(color: InkColor) -> Settings {
+    // Native palette: black/gray/white, blue/red/green, yellow/cyan/magenta.
+    let color = match color {
+        InkColor::Blue => 3,
+        InkColor::Red => 4,
+        InkColor::Cyan => 7,
+        InkColor::Magenta => 8,
+    };
+    Settings { kind: 0, size: 1, color }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct State {
@@ -190,6 +200,7 @@ impl Ui for DeviceUi {
 
 struct Session<U: Ui> {
     ui: U,
+    target: Settings,
     initial: State,
     cached: Option<State>,
     previous_tool: Option<i32>,
@@ -270,18 +281,18 @@ impl<U: Ui> Session<U> {
         self.ui.remember_tool(self.previous_tool.unwrap()).await?;
         let original = self.panel().await?;
         self.original = Some(original);
-        if original.kind != AI.kind {
-            self.tap(TYPES[AI.kind]).await?;
+        if original.kind != self.target.kind {
+            self.tap(TYPES[self.target.kind]).await?;
         }
         let ballpoint = self.panel().await?;
-        ensure!(ballpoint.kind == AI.kind, "Actual Ballpoint pen was not selected");
+        ensure!(ballpoint.kind == self.target.kind, "Actual Ballpoint pen was not selected");
         self.ballpoint = Some(ballpoint);
-        self.set(AI).await?;
+        self.set(self.target).await?;
         self.close_panel().await?;
         if !self.initial.toolbar {
             self.tap(TOGGLE).await?;
         }
-        log::info!("Temporary answer pen: Ballpoint, red, medium; original settings captured");
+        log::info!("Temporary answer pen: Ballpoint, medium; original settings captured");
         Ok(())
     }
 
@@ -328,7 +339,7 @@ impl<U: Ui> Session<U> {
     }
 }
 
-async fn with_ui<U, F, Fut, T>(mut ui: U, operation: F) -> Result<T>
+async fn with_ui<U, F, Fut, T>(mut ui: U, color: InkColor, operation: F) -> Result<T>
 where
     U: Ui,
     F: FnOnce() -> Fut,
@@ -337,6 +348,7 @@ where
     let initial = ui.read().await?;
     let mut session = Session {
         ui,
+        target: answer_settings(color),
         initial,
         cached: Some(initial),
         previous_tool: initial.tool_y,
@@ -357,7 +369,15 @@ where
 
 /// Restore profiles after either a successful answer or an ordinary request,
 /// rendering, or cancellation error. Process termination cannot run UI cleanup.
-pub async fn with_red_ballpoint<F, Fut, T>(operation: F) -> Result<T>
+pub async fn with_answer_ballpoint<F, Fut, T>(operation: F) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    with_ballpoint_color(crate::preferences::load()?.ink_color, operation).await
+}
+
+pub async fn with_ballpoint_color<F, Fut, T>(color: InkColor, operation: F) -> Result<T>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<T>>,
@@ -366,12 +386,14 @@ where
         matches!(DeviceModel::detect(), DeviceModel::RemarkablePaperPro),
         "Temporary answer pen currently supports Paper Pro only"
     );
+    log::info!("Answer ink color: {:?}", color);
     with_ui(
         DeviceUi {
             touch: Touch::new(false, TriggerCorner::UpperRight),
             rotated: crate::util::ui_rotated_180(),
             icon: None,
         },
+        color,
         operation,
     )
     .await
@@ -393,7 +415,7 @@ mod tests {
 
     struct FakeUi {
         world: Arc<Mutex<World>>,
-        fail_red_once: bool,
+        fail_color_once: Option<usize>,
         dismiss_on_type: bool,
     }
 
@@ -429,8 +451,8 @@ mod tests {
                     let kind = w.kind;
                     w.profiles[kind].size = index;
                 } else if let Some(index) = COLORS.iter().position(|p| *p == point) {
-                    if self.fail_red_once && index == AI.color {
-                        self.fail_red_once = false;
+                    if self.fail_color_once == Some(index) {
+                        self.fail_color_once = None;
                         anyhow::bail!("Simulated color-control failure");
                     }
                     let kind = w.kind;
@@ -460,7 +482,8 @@ mod tests {
     #[tokio::test]
     async fn restores_generic_selection_and_both_profiles_on_success_or_failure() {
         // Includes a tool row the client does not name, plus a hidden toolbar.
-        for tool in [80, 130, 187, 240, 295, 347] {
+        for (color, tool) in [InkColor::Blue, InkColor::Red, InkColor::Cyan, InkColor::Magenta]
+            .into_iter().flat_map(|color| [80, 130, 187, 240, 295, 347].map(|tool| (color, tool))) {
             for toolbar in [false, true] {
                 for fail in [false, true] {
                     let initial = world(tool, toolbar);
@@ -468,13 +491,13 @@ mod tests {
                     let check = Arc::clone(&shared);
                     let ui = FakeUi {
                         world: Arc::clone(&shared),
-                        fail_red_once: false,
+                        fail_color_once: None,
                         dismiss_on_type: fail,
                     };
-                    let result = with_ui(ui, || async move {
+                    let result = with_ui(ui, color, || async move {
                         {
                             let w = check.lock().unwrap();
-                            assert_eq!(w.profiles[w.kind], AI);
+                            assert_eq!(w.profiles[w.kind], answer_settings(color));
                             assert_eq!(w.tool, 80);
                             assert!(!w.menu);
                             assert_eq!(w.toolbar, toolbar);
@@ -494,14 +517,15 @@ mod tests {
 
     #[tokio::test]
     async fn rolls_back_partial_setup_without_running_the_request() {
+        let color = InkColor::Blue;
         let initial = world(130, false);
         let shared = Arc::new(Mutex::new(initial.clone()));
         let ui = FakeUi {
             world: Arc::clone(&shared),
-            fail_red_once: true,
+            fail_color_once: Some(answer_settings(color).color),
             dismiss_on_type: true,
         };
-        let result = with_ui(ui, || async {
+        let result = with_ui(ui, color, || async {
             panic!("Must not submit or draw after setup failure");
             #[allow(unreachable_code)]
             Ok(())

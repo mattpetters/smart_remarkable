@@ -4,7 +4,7 @@ use anyhow::{ensure, Result};
 use smart_remarkable::{
     answer_delivery::draw_complete_answer,
     cancellation::SmartRemarkableCancellation,
-    ink_session::with_red_ballpoint,
+    ink_session::with_answer_ballpoint,
     note_page::insert_after_current,
     pen::Pen,
     screenshot::Screenshot,
@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
     ensure!((17..=25).contains(&lines.len()), "Integration fixture must span 17-25 lines");
     let mut ss = Screenshot::new()?;
     ss.take_screenshot()?;
-    with_red_ballpoint(|| async {
+    with_answer_ballpoint(|| async {
         let fresh = insert_after_current(&mut Touch::new(false, TriggerCorner::FourFinger)).await?;
         let clear = smart_remarkable::page_layout::append_rect(&fresh, Rect { x: 64, y: 55, w: 0, h: 0 })?;
         ensure!(clear.y < 100 && clear.h > 800, "Test page is not blank; no ink drawn");

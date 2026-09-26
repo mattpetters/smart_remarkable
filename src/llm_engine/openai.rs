@@ -190,7 +190,7 @@ impl LLMEngine for OpenAI {
         });
 
         if self.model == "codex" {
-            body["remarkable_settings"] = serde_json::to_value(crate::preferences::load()?)?;
+            body["remarkable_settings"] = crate::preferences::load()?.inference_settings();
         }
 
         debug!("Request: {}", body);

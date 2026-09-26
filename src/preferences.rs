@@ -13,6 +13,7 @@ use warp::{Filter, Reply};
 pub struct Preferences {
     pub backend: Backend,
     pub reply_length: ReplyLength,
+    pub ink_color: InkColor,
     pub page_context: bool,
     pub auto_fallback: bool,
     pub backend_order: Vec<Backend>,
@@ -32,11 +33,21 @@ pub enum ReplyLength {
     Balanced,
     Detailed,
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum InkColor {
+    #[default]
+    Blue,
+    Red,
+    Cyan,
+    Magenta,
+}
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             backend: Backend::Codex,
             reply_length: ReplyLength::Balanced,
+            ink_color: InkColor::Blue,
             page_context: true,
             auto_fallback: true,
             backend_order: vec![Backend::Codex, Backend::Hermes, Backend::Claude],
@@ -54,6 +65,18 @@ impl Backend {
     }
 }
 impl Preferences {
+    /// Device rendering preferences stay local and must not extend the bridge
+    /// protocol: older bridges reject unknown request fields.
+    pub fn inference_settings(&self) -> serde_json::Value {
+        serde_json::json!({
+            "backend": self.backend,
+            "reply_length": self.reply_length,
+            "page_context": self.page_context,
+            "auto_fallback": self.auto_fallback,
+            "backend_order": self.backend_order,
+            "models": self.models,
+        })
+    }
     fn validate(&self) -> Result<()> {
         anyhow::ensure!(!self.backend_order.is_empty() && self.backend_order.len() <= 3, "Invalid fallback order");
         for (i, backend) in self.backend_order.iter().enumerate() {
@@ -341,13 +364,25 @@ mod tests {
     }
     #[test]
     fn validates_settings_and_round_trips_atomic_file() {
-        for raw in [r#"{"backend":"cloud"}"#, r#"{"page_context":"false"}"#, r#"{"api_key":"secret"}"#] {
+        for raw in [r#"{"backend":"cloud"}"#, r#"{"page_context":"false"}"#, r#"{"api_key":"secret"}"#, r#"{"ink_color":"green"}"#] {
             assert!(serde_json::from_str::<Preferences>(raw).is_err());
         }
         let prefs: Preferences = serde_json::from_str(r#"{"backend":"hermes","reply_length":"brief","page_context":false}"#).unwrap();
+        assert_eq!(prefs.ink_color, InkColor::Blue);
+        assert!(prefs.inference_settings().get("ink_color").is_none());
         let path = std::env::temp_dir().join(format!("remarkable-preferences-{}.json", std::process::id()));
         save_to(&path, &prefs).unwrap();
         assert_eq!(serde_json::from_slice::<Preferences>(&std::fs::read(&path).unwrap()).unwrap(), prefs);
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn ink_choices_persist_without_changing_inference_settings() {
+        let original = Preferences::default();
+        for color in [InkColor::Blue, InkColor::Red, InkColor::Cyan, InkColor::Magenta] {
+            let prefs = Preferences { ink_color: color, ..original.clone() };
+            let encoded = serde_json::to_vec(&prefs).unwrap();
+            assert_eq!(serde_json::from_slice::<Preferences>(&encoded).unwrap(), prefs);
+            assert_eq!(prefs.inference_settings(), original.inference_settings());
+        }
     }
 }

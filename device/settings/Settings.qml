@@ -12,6 +12,7 @@ Rectangle {
     property bool saving: false
     property string selectedBackend: "codex"
     property string selectedLength: "balanced"
+    property string inkColor: "blue"
     property bool pageContext: true
     property bool autoFallback: true
     property var backendOrder: ["codex", "hermes", "claude"]
@@ -65,6 +66,7 @@ Rectangle {
             if (state.open && !panelOpen) {
                 selectedBackend = state.preferences.backend
                 selectedLength = state.preferences.reply_length
+                inkColor = state.preferences.ink_color || "blue"
                 pageContext = state.preferences.page_context
                 autoFallback = state.preferences.auto_fallback
                 var order = state.preferences.backend_order || ["codex", "hermes", "claude"]
@@ -78,7 +80,7 @@ Rectangle {
     function save() {
         if (saving) return
         saving = true
-        request("POST", "", {backend: selectedBackend, reply_length: selectedLength, page_context: pageContext, auto_fallback: autoFallback, backend_order: backendOrder, models: selectedModels}, function(status, text) {
+        request("POST", "", {backend: selectedBackend, reply_length: selectedLength, ink_color: inkColor, page_context: pageContext, auto_fallback: autoFallback, backend_order: backendOrder, models: selectedModels}, function(status, text) {
             saving = false
             if (status === 200) panelOpen = false
             else message = "Could not save. Your previous settings are unchanged."
@@ -108,7 +110,7 @@ Rectangle {
     }
     Rectangle {
         width: Math.min(parent.width - 80, 1040)
-        height: Math.min(parent.height - 80, 1540)
+        height: Math.min(parent.height - 80, 1840)
         anchors.centerIn: parent
         color: "white"; border.color: "black"; border.width: 3; radius: 12
         Column {
@@ -153,6 +155,14 @@ Rectangle {
                 spacing: 18
                 Choice { label: "On"; chosen: root.pageContext; onPicked: root.pageContext = true }
                 Choice { label: "Off"; chosen: !root.pageContext; onPicked: root.pageContext = false }
+            }
+            Text { text: "Answer ink"; font.pixelSize: 30 }
+            Row {
+                spacing: 14
+                Choice { width: 205; label: "Blue"; chosen: root.inkColor === "blue"; onPicked: root.inkColor = "blue" }
+                Choice { width: 205; label: "Red"; chosen: root.inkColor === "red"; onPicked: root.inkColor = "red" }
+                Choice { width: 205; label: "Cyan"; chosen: root.inkColor === "cyan"; onPicked: root.inkColor = "cyan" }
+                Choice { width: 205; label: "Magenta"; chosen: root.inkColor === "magenta"; onPicked: root.inkColor = "magenta" }
             }
             Text { text: "Lasso your question, then tap Ask.\nAI opens settings. Four/five fingers also work."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
             Text { text: root.message; font.pixelSize: 24; width: parent.width; wrapMode: Text.WordWrap; height: 70 }

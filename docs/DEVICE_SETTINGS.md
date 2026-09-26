@@ -9,6 +9,12 @@ visible page is included as context. Save applies the preferences to the next
 request; Close discards edits. Sending is disabled while the panel is open, and
 settings gestures received during an answer are discarded.
 
+**Answer ink** selects Blue (default), Red, Cyan, or Magenta. The choice is saved
+on the tablet and applies to status marks, replies, and illustrations. Existing
+preferences without a color use blue. Answers still use medium Ballpoint and
+restore the previous tool, pen profiles, and toolbar visibility afterward.
+This rendering preference stays on the tablet and is not sent to the model.
+
 Preferences live on the tablet at
 `/home/root/smart-remarkable/preferences.json`. They contain no credentials.
 The loopback-only API on port 8766 accepts only these enumerated preferences;
@@ -24,7 +30,7 @@ Use Up/Down to order the three providers. The first is primary; with **Fallbacks
 
 Claude includes `sonnet`, `opus`, `fable`, and `haiku`; these aliases track the installed CLI's recommended releases. The catalog also includes explicit IDs for Sonnet 5, Opus 5.5, Fable 5.1, Fable 5, and Haiku 4.5. Opus 5.5 requires Claude Code 2.1.280 or newer. Access depends on the signed-in account. Fable can use usage credits, including in noninteractive requests; it is available as a choice but is not selected by default. See the [Claude model configuration](https://code.claude.com/docs/en/model-config) and [current model catalog](https://platform.claude.com/docs/en/models/overview).
 
-The pending ink checkbox includes the starting provider and selected model (a CLI alias such as `sonnet` may be shown). A transient toolbar banner reports the current provider/model during inference and disappears before ink delivery. If another provider answers, the reply names that fallback; continuation-page headers use the answering provider. Models still share the same page context, drawing format, red Ballpoint, and tool restoration.
+The pending ink checkbox includes the starting provider and selected model (a CLI alias such as `sonnet` may be shown). A transient toolbar banner reports the current provider/model during inference and disappears before ink delivery. If another provider answers, the reply names that fallback; continuation-page headers use the answering provider. Models still share the same page context, drawing format, selected Ballpoint color, and tool restoration.
 
 Claude Code uses the Mac's existing `claude auth login` session. The adapter requires a CLI supporting `--safe-mode`, native image stream input, and structured output. It runs without session persistence, personal customizations, or inherited MCP servers. It does not extract subscription credentials or require an Anthropic API key. This is a Mac-hosted backend, not direct tablet-to-cloud service.
 
@@ -95,7 +101,7 @@ ssh rmpp-wifi '/home/root/smart-remarkable/settings-ui.sh disable'
 ```
 
 The settings schema has automated round-trip, provider/model validation, and duplicate-send
-coverage. The current build passed 58 Python bridge/supervisor tests, 51 Rust tests (50 full-suite checks plus the new preference check), and QML lint with the Qt modules installed. A synthetic native-image request through Claude Haiku returned a valid answer in 4.2 seconds. The updated provider-order panel still needs a physical touch check after unlocking the tablet. The firmware 3.27.3.0 resource patches loaded successfully on Paper Pro.
+coverage. The current build passed 58 Python bridge/supervisor tests, 52 Rust tests, and QML lint with the Qt modules installed. The Rust checks exercise all four answer colors, tool/profile restoration after successful and failed requests, and compatibility with older bridge settings. A synthetic native-image request through Claude Haiku returned a valid answer in 4.2 seconds. The updated provider-order panel still needs a physical touch check after unlocking the tablet. The firmware 3.27.3.0 resource patches loaded successfully on Paper Pro.
 Physical toolbar buttons and settings interaction were confirmed on this firmware.
 With XOVI loaded, capture uses its registered framebuffer address and row stride
 instead of relying on allocator layout. Metadata is cached for the lifetime of

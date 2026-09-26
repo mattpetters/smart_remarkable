@@ -430,7 +430,8 @@ pub async fn processing_task(
     let include_page_context = prompt_general_json["include_page_context"].as_bool().unwrap_or(false)
         && crate::preferences::load()?.page_context;
     let show_answer_status = prompt_general_json["answer_status_marker"].as_bool().unwrap_or(false);
-    let temporary_red_ballpoint = prompt_general_json["temporary_red_ballpoint"].as_bool().unwrap_or(false);
+    let temporary_answer_ballpoint = prompt_general_json["temporary_answer_ballpoint"].as_bool()
+        .or_else(|| prompt_general_json["temporary_red_ballpoint"].as_bool()).unwrap_or(false);
     let paginate = prompt_general_json["paginate_answer"].as_bool().unwrap_or(false);
     if let Ok(mut result) = answer_delivery_result.lock() { *result = None; }
 
@@ -494,11 +495,11 @@ pub async fn processing_task(
         let _ = progress_tx.send(ProgressState::Done);
         return Ok(());
     }
-    let use_red_pen = temporary_red_ballpoint && show_answer_status
+    let use_answer_pen = temporary_answer_ballpoint && show_answer_status
         && !config.no_draw && !config.is_test_mode() && selection.is_some();
     let request = async {
         if let (Some(screen), Some((question, _))) = (append_source.as_ref(), selection) {
-            let rect = if use_red_pen {
+            let rect = if use_answer_pen {
                 crate::page_layout::prepare_append(question).await?
             } else {
                 crate::page_layout::append_rect(screen, question)?
@@ -597,7 +598,7 @@ pub async fn processing_task(
         if show_answer_status && !config.no_draw && !config.is_test_mode() {
             crate::preferences::prepare_label().await;
             if let Some((_, rect)) = selection {
-                match draw_status(Arc::clone(&pen), rect, AnswerStatus::Pending, use_red_pen).await {
+                match draw_status(Arc::clone(&pen), rect, AnswerStatus::Pending, use_answer_pen).await {
                     Ok(()) => {
                         info!("Request pending marker drawn");
                         if let Ok(mut slot) = answer_marker_slot.lock() {
@@ -634,7 +635,7 @@ pub async fn processing_task(
         // error or response without a rendered answer leaves it pending: cross it.
         let pending = answer_marker_slot.lock().ok().and_then(|mut slot| slot.take());
         if let Some(rect) = pending {
-            if inference_failed && paginate && use_red_pen && !cancellation.should_cancel() {
+            if inference_failed && paginate && use_answer_pen && !cancellation.should_cancel() {
                 // Inference failed before any answer lines were drawn. This
                 // known empty answer area can show a readable failure notice.
                 let width = (((rect.w - 28) as f32 / 13.2).floor() as usize).clamp(12, 52);
@@ -655,7 +656,7 @@ pub async fn processing_task(
                     }
                 }
             }
-            if let Err(error) = draw_status(Arc::clone(&pen), rect, AnswerStatus::Failed, use_red_pen).await {
+            if let Err(error) = draw_status(Arc::clone(&pen), rect, AnswerStatus::Failed, use_answer_pen).await {
                 info!("Could not update failed request marker: {}", error);
             }
         }
@@ -663,8 +664,8 @@ pub async fn processing_task(
         execution_result
     };
     // The same cleanup covers model failures, render failures, and cancellation.
-    let execution_result = if use_red_pen {
-        crate::ink_session::with_red_ballpoint(|| request).await
+    let execution_result = if use_answer_pen {
+        crate::ink_session::with_answer_ballpoint(|| request).await
     } else {
         request.await
     };
