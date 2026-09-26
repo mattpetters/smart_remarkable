@@ -8,7 +8,7 @@ from unittest.mock import patch
 import urllib.error
 import urllib.request
 
-from codex_bridge import Bridge, PNG_PREFIX, RequestError, cli_failure_reason, run_codex, selection_input, validate_answer
+from codex_bridge import Bridge, PNG_PREFIX, RequestError, cli_failure_reason, format_answer_sources, run_codex, selection_input, validate_answer, web_lookup_count
 
 PNG = b"\x89PNG\r\n\x1a\nfixture"
 PAGE = b"\x89PNG\r\n\x1a\npage-context"
@@ -145,11 +145,18 @@ class CodexTests(unittest.TestCase):
             run_codex("Continue the visible conversation", [PNG, PAGE], mode="ink", model="test", timeout=12, executable="codex")
         self.assertTrue(all(not path.exists() for path in images))
 
-    def test_subprocess_uses_image_schema_stdin_and_read_only(self):
+    def test_subprocess_enables_live_search_and_authorized_full_tool_access(self):
         def process(command, **kwargs):
             self.assertIsInstance(command, list)
             self.assertNotIn("shell", kwargs)
-            self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+            self.assertEqual(command[command.index("--sandbox") + 1], "danger-full-access")
+            self.assertLess(command.index("--search"), command.index("exec"))
+            self.assertNotIn("--disable", command)
+            self.assertIn("--json", command)
+            self.assertIn("Before saying you do not know an external fact, try a focused web lookup", kwargs["input"])
+            self.assertIn("short source name/domain", kwargs["input"])
+            self.assertIn("selected user writing explicitly requests", kwargs["input"])
+            self.assertNotIn("Do not run tools", kwargs["input"])
             self.assertEqual(command[-1], "-")
             self.assertIn("Answer", kwargs["input"])
             image = Path(command[command.index("--image") + 1])
@@ -160,6 +167,32 @@ class CodexTests(unittest.TestCase):
         with patch("codex_bridge.subprocess.run", side_effect=process):
             result = run_codex("Answer", [PNG], mode="text", model="test", timeout=12, executable="codex")
         self.assertEqual(result, {"text": "Four."})
+
+    def test_web_activity_counts_completed_lookups_without_returning_content(self):
+        events = [
+            {"type": "item.started", "item": {"type": "web_search", "query": "PRIVATE_QUERY"}},
+            {"type": "item.completed", "item": {"type": "web_search", "query": "PRIVATE_QUERY"}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "PRIVATE_ANSWER"}},
+            {"type": "item.completed", "item": None},
+            [],
+        ]
+        self.assertEqual(web_lookup_count("\n".join(json.dumps(e) for e in events)), 1)
+        self.assertEqual(web_lookup_count("not json\n{}\nnull"), 0)
+        self.assertEqual(web_lookup_count(None), 0)
+
+    def test_web_sources_fit_the_page_without_discarding_the_answer(self):
+        raw = {"lines": ["The answer.", "Source: [Product specifications](https://example.com/products/a/long/path)"]}
+        answer = format_answer_sources(raw, "ink", "Reply layout: use at most 4 lines, each at most 32 characters.")
+        self.assertEqual(answer["lines"][0], "The answer.")
+        self.assertIn("Product specifications (example.com)", " ".join(answer["lines"]))
+        self.assertTrue(all(len(line) <= 32 for line in answer["lines"]))
+        validate_answer(answer, "ink")
+        with self.assertRaises(RequestError):
+            format_answer_sources(raw, "ink", "Reply layout: use at most 2 lines, each at most 12 characters.")
+        self.assertEqual(format_answer_sources({"lines": [42]}, "ink", ""), {"lines": [42]})
+        spaced = format_answer_sources({"lines": ["First.", "", "Second."]}, "ink",
+                                       "Reply layout: use at most 2 lines, each at most 52 characters.")
+        self.assertEqual(validate_answer(spaced, "ink"), {"lines": ["First.", "Second."]})
 
     def test_timeout_becomes_gateway_timeout(self):
         with patch("codex_bridge.subprocess.run", side_effect=subprocess.TimeoutExpired("codex", 1)):

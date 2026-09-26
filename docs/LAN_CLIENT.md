@@ -35,8 +35,13 @@ No OpenAI API key is required for this route.
 - Blank paragraph separators in a model response are omitted instead of rejecting
   the answer. Pen selection is idempotent; answer and failure marks reuse the pen
   prepared for the pending marker without reopening its settings.
-- Read-only, ephemeral Codex invocations. The visible page supplies conversation
-  context; there is no hidden session history shared across notebooks.
+- Live web search for explicit lookups, current facts, unfamiliar terms, and
+  factual uncertainty. Researched replies include a compact source name/domain.
+- Full Codex tool access for this personal-use workflow, with short conversational
+  answers as the default. The prompt reserves changes and external actions for
+  explicit requests in the selected writing.
+- Ephemeral Codex invocations. The visible page supplies conversation context;
+  there is no hidden session history shared across notebooks.
 - Authenticated HTTP bound to loopback on the Mac, reached through an SSH
   reverse forward bound to loopback on the tablet.
 - Global gesture listener: no notebook ID, title, template, or per-notebook setup.
@@ -160,8 +165,8 @@ tail -f tmp/lan-client/supervisor.log
 ssh rmpp-wifi 'journalctl -fu smart-remarkable-lan'
 ```
 
-The bridge logs elapsed time and response mode, not prompts, screenshots, or
-tokens. Upstream tablet logs are separate; avoid debug-level logging of private
+The bridge logs elapsed time, response mode, and completed web-lookup event
+counts, not prompts, screenshots, search queries, result URLs, or tokens. Upstream tablet logs are separate; avoid debug-level logging of private
 notebooks. On each trigger, the selected question and surrounding visible-page image are
 sent to Codex together, from the same capture before status ink is drawn. The
 page can provide earlier notes and AI-labeled replies for follow-up questions.
@@ -169,6 +174,15 @@ Zoomed-out or scrolled-off content, other pages, and closed notebooks are not
 included. Temporary bridge images are deleted after the request. The standalone
 `capture` binary reads the display without creating virtual input devices or
 calling an LLM.
+
+The Mac bridge explicitly invokes `codex --search exec` with
+`--sandbox danger-full-access` and `approval_policy="never"`. It keeps
+`--ephemeral` and `--ignore-user-config`, so CLI authentication is reused without
+loading the user's normal Codex configuration. This is full local tool access;
+the request prompt's focus on Q&A/research is not an operating-system sandbox.
+Web searches can add latency. The pending checkbox remains while lookup and
+answer generation run. Unclear handwriting still prompts clarification; lack of
+an external fact should prompt research before an uncertainty response.
 
 ## Validation
 
@@ -182,7 +196,10 @@ docker run --rm --platform linux/arm64 \
 ```
 
 The bridge tests cover authorization, malformed requests, remote-image rejection,
-output bounds, timeouts, single-flight inference, and safe CLI argument handling.
+output bounds, timeouts, single-flight inference, live-search/full-access CLI
+arguments, query-free tool-activity counting, and compact source formatting.
+A live synthetic image request performed three web lookups and returned a
+three-line answer with official-source attribution within the tablet line limits.
 They also verify selection/page ordering, no context carried into a subsequent
 request, and cleanup of temporary images. Rendering tests check marker/text
 separation, checkbox update bounds, and compact short/long answer layouts.

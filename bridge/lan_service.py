@@ -147,6 +147,9 @@ class Service:
             raise Unavailable("Codex CLI was not found; install it or set REMARKABLE_CODEX_BIN")
         try:
             with socket.socket() as probe:
+                # Match HTTPServer's reuse policy so recent closed connections
+                # do not block a bridge reload while in TCP TIME_WAIT.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(("127.0.0.1", PORT))
         except OSError:
             raise Unavailable("Port 8765 is occupied; leaving the other process alone") from None

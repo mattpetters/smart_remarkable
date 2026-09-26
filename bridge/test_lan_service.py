@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -41,6 +42,33 @@ class AvailabilityTests(unittest.TestCase):
             with self.assertRaises(Unavailable):
                 self.service.ensure_bridge()
         spawn.assert_not_called()
+
+    def test_reload_reuses_recently_closed_connections_but_not_a_live_listener(self):
+        ready = {"status": "ready", "backend": "codex", "response_mode": "ink"}
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            listener.listen()
+            with patch("lan_service.PORT", port), \
+                 patch.object(self.service, "health", return_value=None), \
+                 patch.object(self.service, "owned_bridge_pid", return_value=None), \
+                 patch("lan_service.subprocess.Popen") as spawn:
+                with self.assertRaises(Unavailable):
+                    self.service.ensure_bridge()
+                spawn.assert_not_called()
+            # The server closes first, leaving a connection in TIME_WAIT.
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                connection, _ = listener.accept()
+                connection.close()
+                self.assertEqual(client.recv(1), b"")
+        with patch("lan_service.PORT", port), \
+             patch.object(self.service, "health", side_effect=[None, ready]), \
+             patch.object(self.service, "owned_bridge_pid", return_value=None), \
+             patch("lan_service.subprocess.Popen") as spawn:
+            spawn.return_value.pid = 123
+            self.service.ensure_bridge()
+        spawn.assert_called_once()
 
     def test_reconnects_tunnel_without_restarting_active_listener(self):
         health = {"status": "ready", "backend": "codex", "response_mode": "ink"}
