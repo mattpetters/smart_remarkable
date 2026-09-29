@@ -11,9 +11,9 @@ use crate::device::DeviceModel;
 use crate::screenshot::Screenshot;
 use crate::simulation::{SimulationConfig, TouchSimulator};
 
-/// The active pen tool slot in the RMPP xochitl palette.
-/// These correspond to the first two slots in the pen type grid.
-/// Verified palette slot coordinates: Ballpoint=(96,119), Fineliner=(150,119).
+/// Legacy names for the two sidebar pen slots, not guaranteed pen types.
+/// A user can assign calligraphy, a highlighter, or another type to either slot.
+/// `ink_session` explicitly selects the real Ballpoint type for temporary AI ink.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PenTool {
     Ballpoint,
@@ -75,6 +75,8 @@ pub enum TriggerSource {
     LlmButton,
     /// The injected "Draw" button beside xochitl's selection menu.
     DrawButton,
+    /// Five-finger tap opens device preferences without sending a question.
+    Settings,
 }
 
 // Event codes
@@ -134,7 +136,7 @@ impl Touch {
 
         let device_path = match device_model {
             DeviceModel::Remarkable2 => "/dev/input/event2",
-            DeviceModel::RemarkablePaperPro => "/dev/input/event3",
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => "/dev/input/event3",
             DeviceModel::Unknown => "/dev/input/event2", // Default to RM2
         };
 
@@ -234,6 +236,9 @@ impl Touch {
 
                     // Poll for the LLM/Draw buttons' trigger files (independent of trigger_corner)
                     _ = sleep(Duration::from_millis(150)) => {
+                        if crate::preferences::take_send() {
+                            return Ok(TriggerSource::LlmButton);
+                        }
                         if std::fs::remove_file(LLM_BUTTON_TRIGGER_FILE).is_ok() {
                             debug!("LLM button trigger file detected");
                             return Ok(TriggerSource::LlmButton);
@@ -264,7 +269,10 @@ impl Touch {
                                         let count = active_slots.iter().filter(|&&a| a).count();
                                         max_concurrent = max_concurrent.max(count);
                                         if count == 0 {
-                                            if max_concurrent >= 4 {
+                                            if max_concurrent == 5 {
+                                                return Ok(TriggerSource::Settings);
+                                            }
+                                            if max_concurrent == 4 {
                                                 debug!("Four-finger tap detected ({} concurrent contacts)", max_concurrent);
                                                 return Ok(TriggerSource::Touch);
                                             }
@@ -447,6 +455,63 @@ impl Touch {
         Ok(())
     }
 
+    /// Pan down a continuous page with two parallel contacts. Start well inside
+    /// the canvas (not the bottom-edge page browser), with no pinch or fling.
+    pub async fn scroll_page_down(&mut self) -> Result<()> {
+        let TouchMode::Real { input_device, device_model, .. } = &mut self.mode else {
+            return Ok(());
+        };
+        anyhow::ensure!(device_model.is_color(), "Page scrolling requires a Paper Pro device");
+        let device = input_device.as_mut().ok_or_else(|| anyhow::anyhow!("No touch input writer"))?;
+        let mut start = Vec::new();
+        for (slot, x) in [(0, 310), (1, 430)] {
+            let (x, y) = Self::virtual_to_input((x, 810), device_model);
+            start.extend([
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_SLOT, slot),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TRACKING_ID, 101 + slot),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_POSITION_X, x),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_POSITION_Y, y),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_PRESSURE, 100),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TOUCH_MAJOR, 17),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TOUCH_MINOR, 17),
+                InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_ORIENTATION, 4),
+            ]);
+        }
+        start.push(InputEvent::new(EvdevEventType::SYNCHRONIZATION.0, 0, 0));
+        let outcome: Result<()> = async {
+            device.send_events(&start)?;
+            sleep(Duration::from_millis(120)).await;
+            for step in 1..=30 {
+                let mut frame = Vec::new();
+                for (slot, x) in [(0, 310), (1, 430)] {
+                    let (x, y) = Self::virtual_to_input((x, 810 - step * 10), device_model);
+                    frame.extend([
+                        InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_SLOT, slot),
+                        InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_POSITION_X, x),
+                        InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_POSITION_Y, y),
+                    ]);
+                }
+                frame.push(InputEvent::new(EvdevEventType::SYNCHRONIZATION.0, 0, 0));
+                device.send_events(&frame)?;
+                sleep(Duration::from_millis(20)).await;
+            }
+            sleep(Duration::from_millis(180)).await;
+            Ok(())
+        }.await;
+        // Release both contacts even when an intermediate write fails.
+        let released = device.send_events(&[
+            InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_SLOT, 0),
+            InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TRACKING_ID, -1),
+            InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_SLOT, 1),
+            InputEvent::new(EvdevEventType::ABSOLUTE.0, ABS_MT_TRACKING_ID, -1),
+            InputEvent::new(EvdevEventType::SYNCHRONIZATION.0, 0, 0),
+        ]);
+        outcome?;
+        released?;
+        sleep(Duration::from_millis(700)).await;
+        Ok(())
+    }
+
     // ── Tool palette helpers ────────────────────────────────────────────────
 
     /// Palette toggle button (upper-left circle). Tapping toggles the palette open/closed.
@@ -478,16 +543,22 @@ impl Touch {
     /// Detect whether the palette is currently open by scanning the screenshot.
     ///
     /// When the palette is OPEN, the left ~55px wide strip shows tool icons.
-    /// We check whether there's substantial dark content in the sidebar region
-    /// (pixel at x=28, y=80 is dark = pen1 icon or selected-background visible).
+    /// Require substantial dark content in the pen-icon area, rather than
+    /// mistaking a ruled notebook template for an open toolbar.
     /// When palette is CLOSED, only the toggle circle is visible; y=80 is white canvas.
-    fn screenshot_palette_open(ss: &Screenshot) -> bool {
-        // Check a pixel inside the expected sidebar tool area.
-        // Any dark content at this position = palette is open.
-        let is_open = (60u32..110).any(|y| {
-            ss.get_pixel(28, y).map(|(r, _, _)| r < 180).unwrap_or(false)
-        });
-        is_open
+    pub(crate) fn screenshot_palette_open(ss: &Screenshot) -> bool {
+        if DeviceModel::detect() == DeviceModel::RemarkablePaperProMove {
+            return crate::move_ui::toolbar_open(ss);
+        }
+        // A hidden toolbar exposes the notebook template. A ruled line can
+        // contribute a few dark pixels here, so a single pixel is not evidence
+        // that the palette is open. Scan the area: a hollow icon may have
+        // very little ink in its center column even when clearly visible.
+        (60u32..110)
+            .flat_map(|y| (12u32..42).map(move |x| (x, y)))
+            .filter(|&(x, y)| ss.get_pixel(x, y).map(|(r, _, _)| r < 180).unwrap_or(false))
+            .count()
+            >= 90
     }
 
     /// Scan the open palette sidebar and return the y-center of the currently selected tool.
@@ -495,7 +566,7 @@ impl Touch {
     /// When the palette is open, the selected tool has a dark (inverted) background
     /// spanning its full ~45px tall icon area. We scan x=5 (just inside the sidebar)
     /// to find the largest contiguous dark band.
-    fn screenshot_selected_tool_y(ss: &Screenshot) -> Option<i32> {
+    pub(crate) fn screenshot_selected_tool_y(ss: &Screenshot) -> Option<i32> {
         // Scan x=5, y=50..500 for dark pixels; find the longest contiguous run.
         let scan_x = 5u32;
         let mut best_run_start = 0i32;
@@ -643,13 +714,17 @@ impl Touch {
                 return self.select_fineliner().await;
             }
             PenTool::Ballpoint => {
-                // Open palette if needed, tap pen1 sidebar icon, and only
-                // close the palette again if we opened it (it may be pinned)
+                // Tapping an already selected pen opens its settings. Read
+                // the active tool again after revealing a hidden toolbar.
+                let mut active = current_tool;
                 if !palette_open {
                     self.tap(Self::PALETTE_BUTTON).await?;
                     sleep(Duration::from_millis(100)).await;
+                    active = self.read_tool_state().await.1;
                 }
-                self.tap((Self::SIDEBAR_X, Self::SIDEBAR_Y_PEN1)).await?;
+                if Self::ballpoint_needs_selection(active) {
+                    self.tap((Self::SIDEBAR_X, Self::SIDEBAR_Y_PEN1)).await?;
+                }
                 if !palette_open {
                     self.tap(Self::PALETTE_BUTTON).await?;
                 }
@@ -659,6 +734,10 @@ impl Touch {
 
         info!("switch_to_tool: {:?} → {:?}", previous, target);
         Ok(previous)
+    }
+
+    fn ballpoint_needs_selection(active: PenTool) -> bool {
+        active != PenTool::Ballpoint
     }
 
     /// Restore a previously saved tool (e.g. after drawing is done).
@@ -713,7 +792,7 @@ impl Touch {
         let (screen_width, screen_height) = Self::screen_dimensions(device_model);
 
         match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 let x_input = (x_normalized * screen_width as f32) as i32;
                 let y_input = (y_normalized * screen_height as f32) as i32;
                 (x_input, y_input)
@@ -734,7 +813,7 @@ impl Touch {
         let y_normalized = y as f32 / screen_height as f32;
 
         let virt = match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 let x_input = (x_normalized * VIRTUAL_WIDTH as f32) as i32;
                 let y_input = (y_normalized * VIRTUAL_HEIGHT as f32) as i32;
                 (x_input, y_input)
@@ -755,6 +834,7 @@ impl Touch {
         match device_model {
             DeviceModel::Remarkable2 => (1404, 1872),
             DeviceModel::RemarkablePaperPro => (2065, 2833),
+            DeviceModel::RemarkablePaperProMove => (1248, 2208),
             DeviceModel::Unknown => (1404, 1872), // Default to RM2
         }
     }
@@ -780,5 +860,77 @@ impl Touch {
         if let TouchMode::Simulated { simulator } = &self.mode {
             simulator.add_manual_trigger(corner);
         }
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    fn ruled_page(open_toolbar: bool) -> Screenshot {
+        let mut img = image::RgbImage::from_pixel(768, 1024, image::Rgb([255, 255, 255]));
+        for y in (25..1024).step_by(25) {
+            for x in 0..768 {
+                img.put_pixel(x, y, image::Rgb([80, 80, 80]));
+            }
+        }
+        if open_toolbar {
+            for y in 70..100 {
+                // Visible icon with a mostly empty center column.
+                for x in 18..23 {
+                    img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+                }
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        Screenshot::from_png_data(bytes.into_inner())
+    }
+
+    #[test]
+    fn ruled_template_is_not_an_open_toolbar() {
+        assert!(!Touch::screenshot_palette_open(&ruled_page(false)));
+        assert!(Touch::screenshot_palette_open(&ruled_page(true)));
+    }
+
+    #[test]
+    fn pixel_reads_handle_image_bounds() {
+        let ss = ruled_page(false);
+        assert_eq!(ss.get_pixel(28, 25), Some((80, 80, 80)));
+        assert_eq!(ss.get_pixel(28, 26), Some((255, 255, 255)));
+        assert_eq!(ss.get_pixel(768, 25), None);
+        assert_eq!(ss.get_pixel(28, 1024), None);
+    }
+
+    #[test]
+    fn active_ballpoint_is_not_tapped_again() {
+        let mut image = image::RgbImage::from_pixel(768, 1024, image::Rgb([255, 255, 255]));
+        for y in 53..106 {
+            for x in 2..54 {
+                image.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let screen = Screenshot::from_png_data(bytes.into_inner());
+        assert!(Touch::screenshot_palette_open(&screen));
+        let active = Touch::y_to_pen_tool(Touch::screenshot_selected_tool_y(&screen).unwrap());
+        assert_eq!(active, PenTool::Ballpoint);
+        assert!(!Touch::ballpoint_needs_selection(active));
+        assert!(Touch::ballpoint_needs_selection(PenTool::Unknown));
+        assert!(Touch::ballpoint_needs_selection(PenTool::Fineliner));
+    }
+}
+
+#[cfg(test)]
+mod device_geometry_tests {
+    use super::*;
+    #[test]
+    fn move_touch_uses_its_own_panel_range() {
+        let model = DeviceModel::RemarkablePaperProMove;
+        assert_eq!(Touch::screen_dimensions(&model), (1248, 2208));
+        assert_eq!(Touch::virtual_to_input((384, 512), &model), (624, 1104));
+        assert_eq!(Touch::input_to_virtual((624, 1104), &model), (384, 512));
+        assert_eq!(Touch::screen_dimensions(&DeviceModel::RemarkablePaperPro), (2065, 2833));
     }
 }

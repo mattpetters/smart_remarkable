@@ -7,3 +7,5 @@
 /.claude-worktrees
 xovi-ext/llmbutton/*.o
 xovi-ext/llmbutton/*.so
+__pycache__/
+*.pyc

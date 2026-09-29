@@ -1,5 +1,9 @@
 # Smart Remarkable
 
+This fork is developing a multi-agent client for Paper Pro and eventually Paper
+Pro Move. Start with the [Mac-hosted notebook assistant](docs/LAN_CLIENT.md); the upstream
+features and instructions below remain available.
+
 A Vision-LLM agent for the reMarkable tablet. It watches what you write, and
 when you trigger it, sends a screenshot to an LLM and draws (or types) the
 response back onto the screen.

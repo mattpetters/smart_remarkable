@@ -327,8 +327,7 @@ fn xml_escape(s: &str) -> String {
 /// unenforced and can silently produce overlapping/garbled lines when the
 /// model miscounts (see: the "explain option trading" garbled-answer bug).
 ///
-/// Font size/line height shrink for longer answers, so more detail fits
-/// without needing as much vertical page space, while staying legible.
+/// Text origin for the compact answer layout.
 const ANSWER_TEXT_X: u32 = 20;
 
 /// Whether text contains a CJK ideograph. Deliberately narrow (Chinese being
@@ -356,19 +355,13 @@ fn answer_font_family(line: &str) -> &'static str {
     if contains_cjk(line) {
         "Noto Sans SC"
     } else {
-        "Patrick Hand"
+        "IBM Plex Mono"
     }
 }
 
-/// (font_size, line_height) for a given number of answer lines: longer
-/// answers use a smaller size/tighter spacing so they still fit legibly
-/// without needing an ever-taller placement box.
-fn answer_line_layout(n_lines: usize) -> (u32, u32) {
-    if n_lines > 8 {
-        (30, 42)
-    } else {
-        (40, 60)
-    }
+/// Compact, consistent typography; placement may shrink it further to fit.
+fn answer_line_layout(_n_lines: usize) -> (u32, u32) {
+    (22, 31)
 }
 
 pub fn build_svg_from_lines(lines: &[String]) -> String {
@@ -395,26 +388,32 @@ pub fn build_svg_from_lines(lines: &[String]) -> String {
 /// answer appear progressively, like it's being handwritten, instead of all
 /// at once — and doubles as a "still working" signal while it draws.
 pub fn fit_lines_to_rect(lines: &[String], rect: crate::touch::Rect) -> Result<Vec<String>> {
+    Ok(fit_answer_lines(lines, rect, 2.5, true)?.0)
+}
+
+/// Shared layout with an explicit size cap and alignment. Returns the ink height
+/// so an answer's margin marker ends with its text instead of filling empty space.
+pub fn fit_answer_lines(lines: &[String], rect: crate::touch::Rect, max_scale: f32, centered: bool) -> Result<(Vec<String>, f32)> {
     const CANVAS_W: f32 = 768.0;
     const CANVAS_H: f32 = 1024.0;
-    const MAX_UPSCALE: f32 = 2.5;
 
     if lines.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], 0.0));
     }
 
     let combined = build_svg_from_lines(lines);
     let bitmap = svg_to_bitmap(&combined, CANVAS_W as u32, CANVAS_H as u32)?;
     let Some((bbox_x, bbox_y, bbox_w, bbox_h)) = bitmap_ink_bbox(&bitmap) else {
         info!("fit_lines_to_rect: answer has no visible content");
-        return Ok(vec![]);
+        return Ok((vec![], 0.0));
     };
 
     // build_svg_from_lines always emits width="768" height="1024" exactly,
     // so (unlike fit_svg_to_rect, which fits arbitrary LLM-authored SVG)
     // there's no intrinsic-size normalization to apply here.
-    let scale = (rect.w as f32 / bbox_w).min(rect.h as f32 / bbox_h).min(MAX_UPSCALE);
-    let tx = rect.x as f32 - bbox_x * scale + (rect.w as f32 - bbox_w * scale) / 2.0;
+    let scale = (rect.w as f32 / bbox_w).min(rect.h as f32 / bbox_h).min(max_scale);
+    let extra_x = if centered { (rect.w as f32 - bbox_w * scale) / 2.0 } else { 0.0 };
+    let tx = rect.x as f32 - bbox_x * scale + extra_x;
     let ty = rect.y as f32 - bbox_y * scale;
     let tx = tx.clamp(0.0, (CANVAS_W - bbox_w * scale).max(0.0));
     let ty = ty.clamp(0.0, (CANVAS_H - bbox_h * scale).max(0.0));
@@ -436,7 +435,7 @@ pub fn fit_lines_to_rect(lines: &[String], rect: crate::touch::Rect) -> Result<V
     let (font_size, line_height) = answer_line_layout(lines.len());
     let first_y = line_height;
 
-    Ok(lines
+    let fragments = lines
         .iter()
         .enumerate()
         .map(|(i, line)| {
@@ -450,7 +449,8 @@ pub fn fit_lines_to_rect(lines: &[String], rect: crate::touch::Rect) -> Result<V
                 r#"<svg width="768" height="1024" xmlns="http://www.w3.org/2000/svg"><g transform="translate({tx} {ty}) scale({scale} {scale})">{text_el}</g></svg>"#
             )
         })
-        .collect())
+        .collect();
+    Ok((fragments, bbox_h * scale))
 }
 
 pub fn write_bitmap_to_file(bitmap: &[Vec<bool>], filename: &str) -> Result<()> {
@@ -514,20 +514,17 @@ mod tests {
 
         assert_eq!(ys.len(), 8);
         for w in ys.windows(2) {
-            assert_eq!(w[1] - w[0], 60, "line spacing must be exactly 60px, got {:?}", ys);
+            assert_eq!(w[1] - w[0], 31, "line spacing must be exactly 31px, got {:?}", ys);
         }
     }
 
     #[test]
-    fn build_svg_from_lines_shrinks_font_for_long_answers() {
-        // Beyond 8 lines the renderer should switch to the smaller tier
-        // (30px font / 42px spacing) so detailed answers still fit legibly
-        // without needing an ever-taller placement box.
+    fn build_svg_from_lines_keeps_compact_monospaced_size_for_long_answers() {
         let lines: Vec<String> = (0..14).map(|i| format!("point {i}")).collect();
         let svg = build_svg_from_lines(&lines);
 
-        assert!(svg.contains("font-size=\"30\""), "expected smaller font tier for 14 lines");
-        assert!(!svg.contains("font-size=\"40\""));
+        assert!(svg.contains("font-size=\"22\""));
+        assert!(svg.contains("font-family=\"IBM Plex Mono\""));
 
         let ys: Vec<u32> = svg
             .match_indices(" y=\"")
@@ -539,7 +536,7 @@ mod tests {
             .collect();
         assert_eq!(ys.len(), 14);
         for w in ys.windows(2) {
-            assert_eq!(w[1] - w[0], 42, "line spacing must be exactly 42px in the smaller tier, got {:?}", ys);
+            assert_eq!(w[1] - w[0], 31, "line spacing must stay 31px, got {:?}", ys);
         }
     }
 
@@ -641,6 +638,12 @@ pub fn setup_uinput() -> Result<()> {
     let device_model = DeviceModel::detect();
     info!("Device model detected: {}", device_model.name());
 
+    if device_model == DeviceModel::RemarkablePaperProMove {
+        anyhow::ensure!(std::path::Path::new("/dev/uinput").exists(),
+            "Paper Pro Move requires the firmware's uinput device; Paper Pro kernel modules are incompatible");
+        return Ok(());
+    }
+
     if device_model != DeviceModel::RemarkablePaperPro {
         info!("Not a Paper Pro, skipping uinput module check and installation");
         return Ok(());
@@ -691,7 +694,7 @@ pub fn setup_uinput() -> Result<()> {
 }
 
 #[test]
-fn render_chinese_font_test_png() {
+fn render_chinese_font_bitmap() {
     // Exercises the real build_svg_from_lines path (system fonts + embedded
     // fonts both loaded, as on the device) to confirm per-line explicit font
     // selection isn't affected by competing system CJK fonts.
@@ -702,12 +705,14 @@ fn render_chinese_font_test_png() {
     ];
     let svg = build_svg_from_lines(&lines);
     let bitmap = svg_to_bitmap(&svg, 768, 1024).unwrap();
-    write_bitmap_to_file(&bitmap, "/private/tmp/claude-501/-Users-yang-Downloads-remarkable-app/8697c15e-ba77-4d86-a32d-4eb6ec49b9f8/scratchpad/chinese_font_test.png").unwrap();
+    assert_eq!(bitmap.len(), 1024);
+    assert!(bitmap.iter().all(|row| row.len() == 768));
+    assert!(bitmap.iter().flatten().any(|&pixel| pixel), "Expected rendered text ink");
 }
 
 #[test]
 fn answer_font_family_picks_chinese_font_for_cjk_lines() {
-    assert_eq!(answer_font_family("Own stock, sell call option"), "Patrick Hand");
+    assert_eq!(answer_font_family("A concise answer"), "IBM Plex Mono");
     assert_eq!(answer_font_family("这是买入并持有股票"), "Noto Sans SC");
     assert_eq!(answer_font_family("Mixed: 卖出call期权 earns 溢价"), "Noto Sans SC");
 }

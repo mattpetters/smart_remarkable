@@ -1,0 +1,44 @@
+; Notebook assistant panel. Document-view insertion target for firmware 3.27.
+; Requires XOVI qt-resource-rebuilder with a hashtable for the current firmware.
+AFFECT [[17298303916558156758]]
+    TRAVERSE [[254504370080162629]]
+        LOCATE BEFORE ALL
+        INSERT {
+            Loader {
+                id: assistantPanelLoader
+                anchors.fill: parent
+                z: 1000000
+                source: "file:///home/root/smart-remarkable/Settings.qml"
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+; Add controls to the native toolbar layout after the writing tools. The
+; layout's existing spacer absorbs their height, preserving bottom controls.
+AFFECT [[11313888899523275277]]
+    TRAVERSE [[8397993708429497603]] > [[6502786168]][.[[5972374]]=[[233745975898428]]] > [[8398044571386570029]]
+        LOCATE BEFORE Item
+        INSERT {
+            Loader {
+                id: assistantSettingsLoader
+                Layout.preferredWidth: root.minSize.width
+                Layout.preferredHeight: root.minSize.height
+                visible: root.expanded
+                source: "file:///home/root/smart-remarkable/AssistantButton.qml"
+                Connections { target: assistantSettingsLoader.item; function onActivated() { root.closeFoldout() } }
+                PenInputBlocker { anchors.fill: parent; enabled: parent.visible; manager: root.penInput.surfaceManager }
+            }
+            Loader {
+                id: assistantSendLoader
+                Layout.preferredWidth: root.minSize.width
+                Layout.preferredHeight: root.minSize.height
+                visible: root.expanded
+                source: "file:///home/root/smart-remarkable/AssistantButton.qml"
+                onLoaded: item.sendSelection = true
+                Connections { target: assistantSendLoader.item; function onActivated() { root.closeFoldout() } }
+                PenInputBlocker { anchors.fill: parent; enabled: parent.visible; manager: root.penInput.surfaceManager }
+            }
+        }
+    END TRAVERSE
+END AFFECT

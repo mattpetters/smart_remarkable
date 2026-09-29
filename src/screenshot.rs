@@ -7,7 +7,7 @@ use std::io::{Read, Seek};
 use std::process;
 
 use base64::{engine::general_purpose, Engine as _};
-use image::{GenericImageView, ImageEncoder};
+use image::ImageEncoder;
 
 use crate::device::DeviceModel;
 use crate::simulation::{ScreenshotSimulator, SimulationConfig};
@@ -22,6 +22,7 @@ pub enum ScreenshotMode {
 
 pub struct Screenshot {
     mode: ScreenshotMode,
+    decoded_pixels: std::sync::OnceLock<Option<image::RgbImage>>,
 }
 
 impl Screenshot {
@@ -30,6 +31,7 @@ impl Screenshot {
         info!("Screen detected device: {}", device_model.name());
         Ok(Screenshot {
             mode: ScreenshotMode::Real { data: vec![], device_model },
+            decoded_pixels: std::sync::OnceLock::new(),
         })
     }
 
@@ -38,6 +40,7 @@ impl Screenshot {
         info!("Screen using simulation mode");
         Ok(Screenshot {
             mode: ScreenshotMode::Simulated { simulator },
+            decoded_pixels: std::sync::OnceLock::new(),
         })
     }
 
@@ -49,6 +52,7 @@ impl Screenshot {
         match device_model {
             DeviceModel::Remarkable2 => 1872,
             DeviceModel::RemarkablePaperPro => 1632,
+            DeviceModel::RemarkablePaperProMove => 960,
             DeviceModel::Unknown => 1872, // Default to RM2
         }
     }
@@ -61,6 +65,7 @@ impl Screenshot {
         match device_model {
             DeviceModel::Remarkable2 => 1404,
             DeviceModel::RemarkablePaperPro => 2154,
+            DeviceModel::RemarkablePaperProMove => 1696,
             DeviceModel::Unknown => 1404, // Default to RM2
         }
     }
@@ -72,7 +77,7 @@ impl Screenshot {
         };
         match device_model {
             DeviceModel::Remarkable2 => Self::detect_rm2_bytes_per_pixel(),
-            DeviceModel::RemarkablePaperPro => 4,
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => 4,
             DeviceModel::Unknown => 2, // Default to RM2
         }
     }
@@ -110,6 +115,17 @@ impl Screenshot {
     }
 
     pub fn take_screenshot(&mut self) -> Result<()> {
+        self.capture_with_orientation(None)
+    }
+
+    /// Menus and keyboards obscure the toolbar used for orientation detection.
+    /// Retain the canvas orientation while a verified UI transaction is open.
+    pub fn take_screenshot_oriented(&mut self, rotated: bool) -> Result<()> {
+        self.capture_with_orientation(Some(rotated))
+    }
+
+    fn capture_with_orientation(&mut self, rotated: Option<bool>) -> Result<()> {
+        self.decoded_pixels.take();
         if let ScreenshotMode::Simulated { simulator } = &mut self.mode {
             // In simulation mode, just advance to next image
             simulator.advance_to_next_image();
@@ -124,15 +140,19 @@ impl Screenshot {
 
         // Find framebuffer location in memory
         debug!("screenshot: finding address");
-        let skip_bytes = self.find_framebuffer_address(&pid)?;
-
-        // Read the framebuffer data
-        debug!("screenshot: reading data");
-        let screenshot_data = self.read_framebuffer(&pid, skip_bytes)?;
-
-        // Process the image data (transpose, color correction, etc.)
-        debug!("screenshot: processing image");
-        let processed_data = self.process_image(screenshot_data)?;
+        let registered_frame = match &self.mode {
+            ScreenshotMode::Real { device_model, .. } if device_model.is_color() => crate::framebuffer::capture_png(&pid)?,
+            _ => None,
+        };
+        let processed_data = if let Some(png) = registered_frame {
+            self.process_png(png, rotated)?
+        } else {
+            anyhow::ensure!(DeviceModel::detect() != DeviceModel::RemarkablePaperProMove,
+                "Paper Pro Move requires the registered framebuffer capture extension");
+            let skip_bytes = self.find_framebuffer_address(&pid)?;
+            let screenshot_data = self.read_framebuffer(&pid, skip_bytes)?;
+            self.process_image(screenshot_data, rotated)?
+        };
 
         // Update the data
         if let ScreenshotMode::Real { data, .. } = &mut self.mode {
@@ -163,7 +183,7 @@ impl Screenshot {
             ScreenshotMode::Simulated { .. } => &DeviceModel::Unknown, // Default for simulation
         };
         match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 // For RMPP (arm64), we need to use the approach from pointer_arm64.go
                 let start_address = self.get_memory_range(pid)?;
                 let frame_pointer = self.calculate_frame_pointer(pid, start_address)?;
@@ -258,11 +278,14 @@ impl Screenshot {
         Ok(buffer)
     }
 
-    fn process_image(&self, data: Vec<u8>) -> Result<Vec<u8>> {
+    fn process_image(&self, data: Vec<u8>, rotated: Option<bool>) -> Result<Vec<u8>> {
         // Encode the raw data to PNG
         debug!("Encoding raw image data to PNG");
         let png_data = self.encode_png(&data)?;
+        self.process_png(png_data, rotated)
+    }
 
+    fn process_png(&self, png_data: Vec<u8>, rotated: Option<bool>) -> Result<Vec<u8>> {
         // Resize the PNG to VIRTUAL_WIDTH x VIRTUAL_HEIGHT
         debug!("Resizing image to {}x{}", VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
         let img = image::load_from_memory(&png_data)?;
@@ -273,7 +296,11 @@ impl Screenshot {
         // downstream — marquee detection, LLM crops, toolbar pixel checks,
         // placement planning — works in the orientation the user sees.
         // Pen/touch injection mirrors coordinates back (util::maybe_rot180_virtual).
-        let rotated = Self::detect_ui_rotated(&resized_img);
+        let is_move = matches!(&self.mode, ScreenshotMode::Real { device_model: DeviceModel::RemarkablePaperProMove, .. });
+        // Move 3.29 has a horizontal portrait toolbar. The sidebar heuristic
+        // used by Paper Pro mistakes landscape chrome for a 180-degree turn.
+        // Keep its native orientation; UI actions explicitly require portrait.
+        let rotated = !is_move && rotated.unwrap_or_else(|| Self::detect_ui_rotated(&resized_img));
         crate::util::set_ui_rotated_180(rotated);
         let resized_img = if rotated { resized_img.rotate180() } else { resized_img };
 
@@ -288,7 +315,7 @@ impl Screenshot {
             ScreenshotMode::Simulated { .. } => &DeviceModel::Unknown, // Default for simulation
         };
         match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 encoder.write_image(
                     resized_img.as_rgba8().unwrap().as_raw(),
                     VIRTUAL_WIDTH,
@@ -342,7 +369,7 @@ impl Screenshot {
             ScreenshotMode::Simulated { .. } => &DeviceModel::Unknown, // Default for simulation
         };
         match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 // RMPP uses 32-bit RGBA format
                 self.encode_png_rmpp(raw_data)
             }
@@ -671,17 +698,19 @@ impl Screenshot {
     }
 
     #[cfg(test)]
-    fn from_png_data(data: Vec<u8>) -> Self {
+    pub(crate) fn from_png_data(data: Vec<u8>) -> Self {
         Screenshot {
             mode: ScreenshotMode::Real {
                 data,
                 device_model: DeviceModel::RemarkablePaperPro,
             },
+            decoded_pixels: std::sync::OnceLock::new(),
         }
     }
 
     /// Return the (r, g, b) pixel value at virtual coordinate (vx, vy) in the 768×1024 space.
-    /// Decodes the stored PNG on each call. Returns None if no screenshot data available.
+    /// Decode once per capture; toolbar scans inspect hundreds of pixels.
+    /// Return None when the capture or coordinates are invalid.
     pub fn get_pixel(&self, vx: u32, vy: u32) -> Option<(u8, u8, u8)> {
         let data = match &self.mode {
             ScreenshotMode::Real { data, .. } if !data.is_empty() => data,
@@ -690,7 +719,13 @@ impl Screenshot {
             }
             _ => return None,
         };
-        let img = image::load_from_memory(data).ok()?;
+        let img = self
+            .decoded_pixels
+            .get_or_init(|| image::load_from_memory(data).ok().map(|img| img.to_rgb8()))
+            .as_ref()?;
+        if vx >= img.width() || vy >= img.height() {
+            return None;
+        }
         let pixel = img.get_pixel(vx, vy);
         Some((pixel[0], pixel[1], pixel[2]))
     }

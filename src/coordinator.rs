@@ -6,9 +6,11 @@ use tokio::sync::{mpsc, watch, Mutex as TokioMutex};
 use tokio::time::{sleep, Duration};
 
 use crate::cancellation::SmartRemarkableCancellation;
+use crate::answer_ui::{draw_status, AnswerStatus};
 use crate::config::Config;
 use crate::embedded_assets::load_config;
 use crate::keyboard::Keyboard;
+use crate::pen::Pen;
 use crate::llm_engine::{LLMEngine, ModelExecutionStatus};
 use crate::screenshot::Screenshot;
 use crate::segmenter::ImageAnalyzer;
@@ -84,6 +86,52 @@ impl CoordinatorChannels {
 impl Default for CoordinatorChannels {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Consume extra gestures as they arrive while a request is active. Keeping the
+/// receiver drained prevents a burst from blocking the listener and replaying
+/// buffered sends after the answer finishes.
+pub async fn finish_processing<T>(
+    mut processing: tokio::task::JoinHandle<T>,
+    triggers: &mut mpsc::Receiver<TriggerEvent>,
+) -> std::result::Result<T, tokio::task::JoinError> {
+    let result = loop {
+        tokio::select! {
+            result = &mut processing => break result,
+            Some(_) = triggers.recv() => info!("Ignoring trigger: an answer is already in progress"),
+        }
+    };
+    while triggers.try_recv().is_ok() {
+        info!("Ignoring trigger received during processing");
+    }
+    result
+}
+
+#[cfg(test)]
+mod trigger_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn discards_bursts_while_busy_and_accepts_next_idle_trigger() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let processing = tokio::spawn(async move { finish_rx.await.unwrap() });
+        let sender = tx.clone();
+        let burst = tokio::spawn(async move {
+            // More than the channel capacity: the producer must not stay
+            // blocked until completion and leak a deferred request afterward.
+            for _ in 0..100 {
+                sender.send(TriggerEvent::WebTrigger).await.unwrap();
+            }
+            finish_tx.send(42).unwrap();
+        });
+        let result = tokio::time::timeout(Duration::from_secs(2), finish_processing(processing, &mut rx)).await.unwrap().unwrap();
+        assert_eq!(result, 42);
+        burst.await.unwrap();
+        assert!(rx.try_recv().is_err());
+        tx.send(TriggerEvent::WebTrigger).await.unwrap();
+        assert!(matches!(rx.recv().await, Some(TriggerEvent::WebTrigger)));
     }
 }
 
@@ -334,32 +382,6 @@ pub async fn progress_task(
     Ok(())
 }
 
-/// Pick a box for the answer near a detected selection: directly below it,
-/// or above if there is no room. The user can move/resize it afterwards with
-/// the native selection tool.
-fn auto_placement(sel: Rect) -> Rect {
-    const SCREEN_W: i32 = 768;
-    const SCREEN_H: i32 = 1024;
-    const GAP: i32 = 16;
-    const MARGIN: i32 = 10;
-
-    // Give the answer all the space from below the selection to the bottom
-    // of the page; fit_svg_to_rect anchors at the top and only uses what the
-    // answer needs, so long answers keep a legible size instead of being
-    // squeezed into a fixed-height box.
-    let w = (sel.w * 3 / 2).clamp(300, SCREEN_W - 2 * MARGIN);
-    let x = sel.x.clamp(MARGIN, SCREEN_W - MARGIN - w);
-    let below_y = sel.y + sel.h + GAP;
-    let space_below = SCREEN_H - MARGIN - below_y;
-    let (y, h) = if space_below >= 160 {
-        (below_y, space_below)
-    } else {
-        // No room below: use the space above the selection instead
-        (MARGIN, (sel.y - GAP - MARGIN).max(160))
-    };
-    Rect { x, y, w, h }
-}
-
 /// Task that processes a trigger: screenshot → LLM → tool execution
 pub async fn processing_task(
     config: Config,
@@ -371,119 +393,18 @@ pub async fn processing_task(
     placement_slot: Arc<Mutex<Option<Rect>>>,
     selection_slot: Arc<Mutex<Option<Rect>>>,
     input_image_slot: Arc<Mutex<Option<String>>>,
+    pen: Arc<Mutex<Pen>>,
+    answer_marker_slot: Arc<Mutex<Option<Rect>>>,
+    answer_delivery_result: crate::answer_delivery::DeliveryResult,
     trigger_source: TriggerSource,
 ) -> Result<()> {
     info!("Processing task: starting");
+    let _awake = crate::awake::RequestWakeLock::acquire(!config.is_test_mode())?;
 
     // Update progress: taking screenshot
     info!("Setting ProgressState::TakingScreenshot");
     let _ = progress_tx.send(ProgressState::TakingScreenshot);
     tokio::time::sleep(Duration::from_millis(10)).await; // Give progress_task time
-
-    // Take screenshot
-    let screenshot_path = config.save_screenshot.clone();
-    let mut selection = selection;
-    let base64_image = if let Some(input_png) = &config.input_png {
-        BASE64_STANDARD.encode(std::fs::read(input_png)?)
-    } else {
-        let mut screenshot = if config.is_test_mode() {
-            let simulation_config = SimulationConfig::from_config(&config);
-            Screenshot::new_simulated(simulation_config)?
-        } else {
-            Screenshot::new()?
-        };
-        screenshot.take_screenshot()?;
-        if let Some(save_screenshot) = &config.save_screenshot {
-            info!("Saving screenshot to {}", save_screenshot);
-            screenshot.save_image(save_screenshot)?;
-        }
-
-        // Select mode without tapped boxes (four-finger trigger): look for the
-        // native selection-tool marquee in the screenshot and answer below it
-        if selection.is_none() && config.select_mode {
-            match screenshot.detect_selection_rect() {
-                Some(marquee) => {
-                    let placement = auto_placement(marquee);
-                    info!("Detected selection marquee {:?}, answering into {:?}", marquee, placement);
-                    selection = Some((marquee, placement));
-                }
-                None => {
-                    info!("No selection marquee found; ignoring trigger (select something first)");
-                    let _ = progress_tx.send(ProgressState::Done);
-                    return Ok(());
-                }
-            }
-        }
-
-        if let Some((selection_rect, _)) = &selection {
-            screenshot.base64_cropped(*selection_rect)?
-        } else {
-            screenshot.base64()?
-        }
-    };
-
-    // Arm the placement slot so the draw_svg tool scales the answer into
-    // the box the user chose, and the selection slot so the Draw button's
-    // draw_sketch tool can redraw into the ORIGINAL lassoed box instead
-    // (when the model reports the selection was already a drawing).
-    if let Some((selection_rect, placement_rect)) = &selection {
-        if let Ok(mut slot) = placement_slot.lock() {
-            *slot = Some(*placement_rect);
-        }
-        if let Ok(mut slot) = selection_slot.lock() {
-            *slot = Some(*selection_rect);
-        }
-    }
-    // Arm the input-image slot so the image-generation draw tool can attach
-    // the cropped selection to its request (sketch-enhancement mode)
-    if let Ok(mut slot) = input_image_slot.lock() {
-        *slot = Some(base64_image.clone());
-    }
-
-    if config.no_submit {
-        info!("Skipping LLM submission (no_submit mode)");
-        let _ = progress_tx.send(ProgressState::Done);
-        return Ok(());
-    }
-
-    // Tap middle bottom to position cursor for text input (before showing
-    // "Thinking"). Skipped in select mode: the tap dismisses the active
-    // marquee and its floating menu, which the in-place redraw needs (the
-    // draw tool deletes the lassoed strokes via that menu's trash button).
-    if !config.select_mode {
-        if let Err(e) = touch.write().await.tap_middle_bottom().await {
-            info!("Failed to tap middle bottom: {}", e);
-        }
-    }
-
-    // Update progress: building context
-    let _ = progress_tx.send(ProgressState::LlmState(ModelExecutionStatus::BuildingContext));
-    tokio::time::sleep(Duration::from_millis(10)).await; // Give progress_task time
-
-    // Apply segmentation if requested
-    let segmentation_description = if config.apply_segmentation {
-        let image_path = config
-            .input_png
-            .as_ref()
-            .or(screenshot_path.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("Segmentation requires either input_png or save_screenshot"))?;
-
-        info!("Applying segmentation to {}", image_path);
-        let analyzer = ImageAnalyzer::new(0.001, 10); // min_region_size=0.1%, max_regions=10
-        match analyzer.analyze_image(image_path) {
-            Ok(result) => {
-                let description = analyzer.generate_description(&result);
-                info!("Segmentation found {} regions", result.regions.len());
-                Some(description)
-            }
-            Err(e) => {
-                info!("Segmentation failed: {}, continuing without it", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     // Load prompt. The Draw button overrides the normal select-mode prompt
     // with prompts/draw.json regardless of --prompt/config.prompt, since it's
@@ -506,27 +427,248 @@ pub async fn processing_task(
         .ok_or_else(|| anyhow::anyhow!("Prompt file '{}' missing required 'prompt' field", prompt_name))?
         .to_string();
 
-    // Add segmentation to prompt if available
-    if let Some(seg_desc) = segmentation_description {
-        prompt.push_str("\n\nImage Analysis:\n");
-        prompt.push_str(&seg_desc);
+    let include_page_context = prompt_general_json["include_page_context"].as_bool().unwrap_or(false)
+        && crate::preferences::load()?.page_context;
+    let show_answer_status = prompt_general_json["answer_status_marker"].as_bool().unwrap_or(false);
+    let temporary_answer_ballpoint = prompt_general_json["temporary_answer_ballpoint"].as_bool()
+        .or_else(|| prompt_general_json["temporary_red_ballpoint"].as_bool()).unwrap_or(false);
+    let paginate = prompt_general_json["paginate_answer"].as_bool().unwrap_or(false);
+    if let Ok(mut result) = answer_delivery_result.lock() { *result = None; }
+
+    // Take screenshot
+    let screenshot_path = config.save_screenshot.clone();
+    let automatic_placement = selection.is_none() && config.select_mode;
+    let mut selection = selection;
+    let mut page_context = None;
+    let mut append_source = None;
+    let base64_image = if let Some(input_png) = &config.input_png {
+        BASE64_STANDARD.encode(std::fs::read(input_png)?)
+    } else {
+        let mut screenshot = if config.is_test_mode() {
+            let simulation_config = SimulationConfig::from_config(&config);
+            Screenshot::new_simulated(simulation_config)?
+        } else {
+            Screenshot::new()?
+        };
+        screenshot.take_screenshot()?;
+        if let Some(save_screenshot) = &config.save_screenshot {
+            info!("Saving screenshot to {}", save_screenshot);
+            screenshot.save_image(save_screenshot)?;
+        }
+
+        // Select mode without tapped boxes (four-finger trigger): look for the
+        // native selection-tool marquee in the screenshot and answer below it
+        if selection.is_none() && config.select_mode {
+            match screenshot.detect_selection_rect() {
+                Some(marquee) => {
+                    info!("Detected selection marquee {:?}; preparing append placement", marquee);
+                    // Capture question/context first; resolve the final viewport
+                    // and placement only after the pen dismisses the lasso menu.
+                    selection = Some((marquee, marquee));
+                }
+                None => {
+                    info!("No selection marquee found; ignoring trigger (select something first)");
+                    let _ = progress_tx.send(ProgressState::Done);
+                    return Ok(());
+                }
+            }
+        }
+
+        let image = if let Some((selection_rect, _)) = &selection {
+            if include_page_context {
+                // Both images come from this capture, before any status ink or
+                // UI interaction. Never recapture a different page as context.
+                page_context = Some(screenshot.base64()?);
+            }
+            screenshot.base64_cropped(*selection_rect)?
+        } else {
+            screenshot.base64()?
+        };
+        if automatic_placement {
+            append_source = Some(screenshot);
+        }
+        image
+    };
+
+    if config.no_submit {
+        info!("Skipping LLM submission (no_submit mode)");
+        let _ = progress_tx.send(ProgressState::Done);
+        return Ok(());
     }
+    let use_answer_pen = temporary_answer_ballpoint && show_answer_status
+        && !config.no_draw && !config.is_test_mode() && selection.is_some();
+    let request = async {
+        if let (Some(screen), Some((question, _))) = (append_source.as_ref(), selection) {
+            let rect = if use_answer_pen {
+                crate::page_layout::prepare_append(question).await?
+            } else {
+                crate::page_layout::append_rect(screen, question)?
+            };
+            info!("Append answer placement: {:?}", rect);
+            selection = Some((question, rect));
+        }
 
-    // Prepare engine
-    let mut engine_guard = engine.lock().await;
-    engine_guard.clear_content();
-    engine_guard.add_image_content(&base64_image);
-    engine_guard.add_text_content(&prompt);
+        // Arm the placement slot so the draw_svg tool scales the answer into
+        // the box the user chose, and the selection slot so the Draw button's
+        // draw_sketch tool can redraw into the ORIGINAL lassoed box instead
+        // (when the model reports the selection was already a drawing).
+        if let Some((selection_rect, placement_rect)) = &selection {
+            if let Ok(mut slot) = placement_slot.lock() {
+                *slot = Some(*placement_rect);
+            }
+            if let Ok(mut slot) = selection_slot.lock() {
+                *slot = Some(*selection_rect);
+            }
+        }
+        // Arm the input-image slot so the image-generation draw tool can attach
+        // the cropped selection to its request (sketch-enhancement mode)
+        if let Ok(mut slot) = input_image_slot.lock() {
+            *slot = Some(base64_image.clone());
+        }
 
-    // Create status callback that wraps model execution status in LlmState
-    let progress_tx_clone = progress_tx.clone();
-    let status_callback = Some(Box::new(move |status: ModelExecutionStatus| {
-        let _ = progress_tx_clone.send(ProgressState::LlmState(status));
-    }) as Box<dyn FnMut(ModelExecutionStatus) + Send>);
+        // Tap middle bottom to position cursor for text input (before showing
+        // "Thinking"). Skipped in select mode: the tap dismisses the active
+        // marquee and its floating menu, which the in-place redraw needs (the
+        // draw tool deletes the lassoed strokes via that menu's trash button).
+        if !config.select_mode {
+            if let Err(e) = touch.write().await.tap_middle_bottom().await {
+                info!("Failed to tap middle bottom: {}", e);
+            }
+        }
 
-    // Execute LLM with proper error handling
-    info!("Processing task: calling LLM");
-    let execution_result = engine_guard.execute(&cancellation, status_callback).await;
+        // Update progress: building context
+        let _ = progress_tx.send(ProgressState::LlmState(ModelExecutionStatus::BuildingContext));
+        tokio::time::sleep(Duration::from_millis(10)).await; // Give progress_task time
+
+        // Apply segmentation if requested
+        let segmentation_description = if config.apply_segmentation {
+            let image_path = config
+                .input_png
+                .as_ref()
+                .or(screenshot_path.as_ref())
+                .ok_or_else(|| anyhow::anyhow!("Segmentation requires either input_png or save_screenshot"))?;
+
+            info!("Applying segmentation to {}", image_path);
+            let analyzer = ImageAnalyzer::new(0.001, 10); // min_region_size=0.1%, max_regions=10
+            match analyzer.analyze_image(image_path) {
+                Ok(result) => {
+                    let description = analyzer.generate_description(&result);
+                    info!("Segmentation found {} regions", result.regions.len());
+                    Some(description)
+                }
+                Err(e) => {
+                    info!("Segmentation failed: {}, continuing without it", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Add segmentation to prompt if available
+        if let Some(seg_desc) = segmentation_description {
+            prompt.push_str("\n\nImage Analysis:\n");
+            prompt.push_str(&seg_desc);
+        }
+        if show_answer_status {
+            if let Some((_, rect)) = selection {
+                let max_lines = if paginate { 128 } else { ((rect.h - 34) / 31).clamp(1, 16) };
+                let max_chars = (((rect.w - 28) as f32 / 13.2).floor() as i32).clamp(12, 52);
+                prompt.push_str(&format!("\nReply layout: use at most {max_lines} lines, each at most {max_chars} characters. Answer all parts of the question concisely."));
+                if paginate {
+                    prompt.push_str("\nReply pagination: additional note pages are available. Complete the answer; the application handles page breaks at the original font size.");
+                }
+            }
+        }
+
+        // Prepare engine
+        let mut engine_guard = engine.lock().await;
+        engine_guard.clear_content();
+        if page_context.is_some() {
+            engine_guard.add_text_content("Image 1: selected handwriting, the latest user question.");
+        }
+        engine_guard.add_image_content(&base64_image);
+        if let Some(page) = &page_context {
+            engine_guard.add_text_content("Image 2: surrounding visible page, including earlier user notes and AI replies. Off-screen content is not included.");
+            engine_guard.add_image_content(page);
+        }
+        engine_guard.add_text_content(&prompt);
+        info!("Request context: selected image, visible page included={}", page_context.is_some());
+
+        if show_answer_status && !config.no_draw && !config.is_test_mode() {
+            crate::preferences::prepare_label().await;
+            if let Some((_, rect)) = selection {
+                match draw_status(Arc::clone(&pen), rect, AnswerStatus::Pending, use_answer_pen).await {
+                    Ok(()) => {
+                        info!("Request pending marker drawn");
+                        if let Ok(mut slot) = answer_marker_slot.lock() {
+                            *slot = Some(rect);
+                        }
+                    }
+                    Err(error) => info!("Could not draw request status: {}", error),
+                }
+            }
+        }
+
+        // Create status callback that wraps model execution status in LlmState
+        let progress_tx_clone = progress_tx.clone();
+        let status_callback = Some(Box::new(move |status: ModelExecutionStatus| {
+            let _ = progress_tx_clone.send(ProgressState::LlmState(status));
+        }) as Box<dyn FnMut(ModelExecutionStatus) + Send>);
+
+        // Execute LLM with proper error handling
+        info!("Processing task: calling LLM");
+        let mut execution_result = engine_guard.execute(&cancellation, status_callback).await;
+        let inference_failed = execution_result.is_err();
+        if paginate && !config.no_draw && !config.is_test_mode() {
+            let delivery = answer_delivery_result.lock().ok().and_then(|mut result| result.take());
+            if execution_result.is_ok() {
+                execution_result = match delivery {
+                    Some(Ok(())) => Ok(()),
+                    Some(Err(error)) => Err(anyhow::anyhow!("Answer delivery incomplete: {error}")),
+                    None => Err(anyhow::anyhow!("No complete answer was drawn")),
+                };
+            }
+        }
+
+        // A successful draw_answer consumes this slot and checks the box. An API
+        // error or response without a rendered answer leaves it pending: cross it.
+        let pending = answer_marker_slot.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(rect) = pending {
+            if inference_failed && paginate && use_answer_pen && !cancellation.should_cancel() {
+                // Inference failed before any answer lines were drawn. This
+                // known empty answer area can show a readable failure notice.
+                let width = (((rect.w - 28) as f32 / 13.2).floor() as usize).clamp(12, 52);
+                let diagnostic = execution_result.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default();
+                let notice = if diagnostic.contains("bridge") || diagnostic.contains("Connection") || diagnostic.contains("transport") {
+                    ["Mac connection unavailable.", "Reconnect, then try again."]
+                } else if diagnostic.contains("possible tool actions") {
+                    ["A tool may have already run.", "Stopped to avoid repeating it."]
+                } else if diagnostic.contains("All configured backends") {
+                    ["All selected backends failed.", "Please check the Mac services."]
+                } else { ["The backend did not finish.", "Please try again."] };
+                crate::preferences::set_phase(notice[0]);
+                if let Ok(lines) = crate::answer_delivery::wrap_lines(&notice.map(str::to_string), width) {
+                    if let Ok(fragments) = crate::answer_ui::answer_svgs(&lines, rect) {
+                        for svg in fragments {
+                            let _ = tokio::task::block_in_place(|| pen.lock().map_err(|_| anyhow::anyhow!("Pen lock unavailable"))?.draw_svg_centerline(&svg));
+                        }
+                    }
+                }
+            }
+            if let Err(error) = draw_status(Arc::clone(&pen), rect, AnswerStatus::Failed, use_answer_pen).await {
+                info!("Could not update failed request marker: {}", error);
+            }
+        }
+
+        execution_result
+    };
+    // The same cleanup covers model failures, render failures, and cancellation.
+    let execution_result = if use_answer_pen {
+        crate::ink_session::with_answer_ballpoint(|| request).await
+    } else {
+        request.await
+    };
 
     // Write model output if configured
     if let Some(model_output_file) = &config.model_output_file {

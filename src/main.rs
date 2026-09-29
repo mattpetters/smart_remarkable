@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use smart_remarkable::{
+    answer_ui::{answer_svgs, status_svg, AnswerStatus},
     cancellation::SmartRemarkableCancellation,
     config::Config,
     coordinator::{self, CoordinatorChannels, ProgressState},
@@ -23,7 +24,7 @@ use smart_remarkable::{
     status::SmartRemarkableStatus,
     touch::{PenTool, Rect, Touch, TriggerCorner, TriggerSource},
     util::{
-        build_svg_from_lines, fit_lines_to_rect, fit_svg_to_rect, image_to_ink_bitmap, setup_uinput, svg_to_bitmap, upscale_png_b64,
+        fit_svg_to_rect, image_to_ink_bitmap, setup_uinput, svg_to_bitmap, upscale_png_b64,
         write_bitmap_to_file, OptionMap,
     },
     web_server::start_web_server,
@@ -225,6 +226,9 @@ async fn main() -> Result<()> {
         .init();
 
     setup_uinput()?;
+    if smart_remarkable::device::DeviceModel::detect().is_color() {
+        smart_remarkable::preferences::start();
+    }
 
     // Debug commands inject input directly; detect UI rotation first so
     // their coordinates land where the user sees them (best effort — only
@@ -637,6 +641,8 @@ async fn run_smart_remarkable_loop(
     // so the image-generation draw tool can attach it to its request when
     // refining an existing sketch
     let input_image_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let answer_marker_slot: Arc<Mutex<Option<Rect>>> = Arc::new(Mutex::new(None));
+    let answer_delivery_result: smart_remarkable::answer_delivery::DeliveryResult = Arc::new(Mutex::new(None));
 
     // Register tools
     register_tools(
@@ -647,6 +653,9 @@ async fn run_smart_remarkable_loop(
         Arc::clone(&placement_slot),
         Arc::clone(&selection_slot),
         Arc::clone(&input_image_slot),
+        Arc::clone(&answer_marker_slot),
+        Arc::clone(&answer_delivery_result),
+        Arc::clone(&cancellation),
         &config,
     )?;
 
@@ -696,6 +705,16 @@ async fn run_smart_remarkable_loop(
                     coordinator::TriggerEvent::WebTrigger => TriggerSource::Touch,
                 };
 
+                if trigger_source == TriggerSource::Settings {
+                    smart_remarkable::preferences::toggle();
+                    continue;
+                }
+                if smart_remarkable::preferences::is_open() {
+                    info!("Ignoring send while settings panel is open");
+                    continue;
+                }
+                if !smart_remarkable::preferences::begin_answer() { continue; }
+
                 // Update progress to indicate we're processing (not waiting for triggers)
                 // let _ = progress_tx.send(ProgressState::TakingScreenshot);
 
@@ -721,6 +740,9 @@ async fn run_smart_remarkable_loop(
                     let placement_slot_clone = Arc::clone(&placement_slot);
                     let selection_slot_clone = Arc::clone(&selection_slot);
                     let input_image_slot_clone = Arc::clone(&input_image_slot);
+                    let pen_clone = Arc::clone(&pen);
+                    let answer_marker_slot_clone = Arc::clone(&answer_marker_slot);
+                    let answer_delivery_result_clone = Arc::clone(&answer_delivery_result);
                     tokio::spawn(async move {
                         coordinator::processing_task(
                             config_clone,
@@ -732,6 +754,9 @@ async fn run_smart_remarkable_loop(
                             placement_slot_clone,
                             selection_slot_clone,
                             input_image_slot_clone,
+                            pen_clone,
+                            answer_marker_slot_clone,
+                            answer_delivery_result_clone,
                             trigger_source,
                         ).await
                     })
@@ -739,7 +764,8 @@ async fn run_smart_remarkable_loop(
 
                 // Wait for either processing to complete or user to cancel
                 // The cancel_monitor will trigger cancellation which processing_task respects
-                let processing_result = processing_handle.await;
+                let processing_result = coordinator::finish_processing(processing_handle, &mut trigger_rx).await;
+                smart_remarkable::preferences::finish_answer();
 
                 // Cancel the cancel monitor (it may still be waiting)
                 cancellation.cancel_execution();
@@ -753,7 +779,7 @@ async fn run_smart_remarkable_loop(
                         info!("Processing completed successfully, ready for next trigger");
                     }
                     Ok(Err(e)) => {
-                        info!("Processing error: {}, ready for next trigger", e);
+                        info!("Processing error: {:#}, ready for next trigger", e);
                     }
                     Err(e) => {
                         info!("Processing task join error: {}, ready for next trigger", e);
@@ -766,10 +792,6 @@ async fn run_smart_remarkable_loop(
                     std::process::exit(0);
                 }
 
-                // Drain any triggers that arrived during processing
-                while trigger_rx.try_recv().is_ok() {
-                    info!("Ignoring trigger received during processing");
-                }
             }
 
             // Wait for config changes via watch channel (priority 2)
@@ -822,6 +844,9 @@ fn register_tools(
     placement_slot: Arc<Mutex<Option<Rect>>>,
     selection_slot: Arc<Mutex<Option<Rect>>>,
     input_image_slot: Arc<Mutex<Option<String>>>,
+    answer_marker_slot: Arc<Mutex<Option<Rect>>>,
+    answer_delivery_result: smart_remarkable::answer_delivery::DeliveryResult,
+    answer_cancellation: Arc<SmartRemarkableCancellation>,
     config: &Config,
 ) -> Result<()> {
     use serde_json::Value as json;
@@ -1231,20 +1256,32 @@ fn register_tools(
         // draw_answer: structured content, no LLM-computed coordinates. Fixes
         // the garbled/overlapping-text bug caused by relying on the model to
         // do its own line-spacing arithmetic (see prompts/selection.json).
-        // Lines are drawn one at a time with a pause in between, so the
-        // answer appears progressively rather than all at once — both a
-        // nicer effect and visible proof it's still working.
-        const LINE_PAUSE: Duration = Duration::from_millis(450);
+        // Pen strokes already appear progressively. Avoid an additional
+        // artificial delay between lines.
 
         let tool_config_draw_answer = load_config("tool_draw_answer.json");
+        let paginate = serde_json::from_str::<json>(&load_config(&config.prompt))?
+            ["paginate_answer"].as_bool().unwrap_or(false);
         engine.register_tool(
             "draw_answer",
             serde_json::from_str::<serde_json::Value>(tool_config_draw_answer.as_str())?,
             Box::new(move |arguments: json| {
-                let lines: Vec<String> = match arguments["lines"].as_array() {
-                    Some(arr) => arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(),
-                    None => {
+                let lines: Vec<String> = match serde_json::from_value::<Vec<String>>(arguments["lines"].clone()) {
+                    Ok(lines) => lines,
+                    Err(_) => {
                         log::error!("draw_answer tool called without valid 'lines' argument");
+                        if let Ok(mut slot) = answer_delivery_result.lock() {
+                            *slot = Some(Err("Answer contains invalid lines".into()));
+                        }
+                        return;
+                    }
+                };
+
+                let drawings = arguments.get("illustrations").cloned().unwrap_or_else(|| serde_json::json!([]));
+                let drawings = match serde_json::from_value::<Vec<smart_remarkable::illustration::Illustration>>(drawings) {
+                    Ok(drawings) if smart_remarkable::illustration::validate(&drawings).is_ok() => drawings,
+                    _ => {
+                        if let Ok(mut slot) = answer_delivery_result.lock() { *slot = Some(Err("Invalid illustration".into())); }
                         return;
                     }
                 };
@@ -1256,15 +1293,30 @@ fn register_tools(
                 }
 
                 let placement = placement_slot.lock().ok().and_then(|mut slot| slot.take());
-                let line_svgs = match &placement {
-                    Some(rect) => fit_lines_to_rect(&lines, *rect).unwrap_or_else(|e| {
-                        log::error!("Failed to fit lines to placement box: {}, drawing combined", e);
-                        vec![build_svg_from_lines(&lines)]
-                    }),
-                    None => vec![build_svg_from_lines(&lines)],
+                let rect = placement.unwrap_or(Rect { x: 40, y: 80, w: 688, h: 900 });
+                if paginate && !no_draw && !test_mode {
+                    let result = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(
+                        smart_remarkable::answer_delivery::draw_complete_answer(&lines, &drawings, rect, Arc::clone(&pen),
+                            Arc::clone(&answer_marker_slot), Arc::clone(&answer_cancellation))));
+                    if let Err(error) = &result { log::error!("Answer delivery failed: {error:#}"); }
+                    if let Ok(mut slot) = answer_delivery_result.lock() {
+                        *slot = Some(result.map_err(|error| error.to_string()));
+                    }
+                    return;
+                }
+                let mut line_svgs = match answer_svgs(&lines, rect) {
+                    Ok(fragments) => fragments,
+                    Err(error) => {
+                        log::error!("Could not lay out marked answer: {}", error);
+                        return;
+                    }
                 };
+                let pending = answer_marker_slot.lock().ok().and_then(|slot| *slot);
+                if pending != Some(rect) {
+                    line_svgs.insert(0, status_svg(rect, AnswerStatus::Pending).unwrap());
+                }
 
-                let previous_tool = if !no_draw && !test_mode {
+                let previous_tool = if !no_draw && !test_mode && pending != Some(rect) {
                     tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current().block_on(async {
                             // Use pen slot 1 (the user's own pen, typically black)
@@ -1276,14 +1328,23 @@ fn register_tools(
                     PenTool::Unknown
                 };
 
+                let mut drawn = true;
                 for (i, svg_data) in line_svgs.iter().enumerate() {
-                    if i > 0 {
-                        std::thread::sleep(LINE_PAUSE);
-                    }
                     let mut keyboard = lock!(keyboard);
                     let mut pen = lock!(pen);
                     if let Err(e) = draw_svg(svg_data, &mut keyboard, &mut pen, save_bitmap.as_ref(), no_draw) {
                         log::error!("Failed to draw answer line {}: {}", i, e);
+                        drawn = false;
+                        break;
+                    }
+                }
+
+                let state = if drawn { AnswerStatus::Complete } else { AnswerStatus::Failed };
+                if let Ok(svg) = status_svg(rect, state) {
+                    if let Err(error) = draw_svg(&svg, &mut lock!(keyboard), &mut lock!(pen), None, no_draw) {
+                        log::error!("Could not finish answer marker: {}", error);
+                    } else if let Ok(mut slot) = answer_marker_slot.lock() {
+                        slot.take();
                     }
                 }
 

@@ -27,7 +27,7 @@ impl Pen {
 
         let pen_input_device = match device_model {
             DeviceModel::Remarkable2 => "/dev/input/event1",
-            DeviceModel::RemarkablePaperPro => "/dev/input/event2",
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => "/dev/input/event2",
             DeviceModel::Unknown => "/dev/input/event1", // Default to RM2
         };
 
@@ -303,6 +303,7 @@ impl Pen {
         match self.device_model {
             DeviceModel::Remarkable2 => 15725,
             DeviceModel::RemarkablePaperPro => 11180,
+            DeviceModel::RemarkablePaperProMove => 6760,
             DeviceModel::Unknown => 15725, // Default to RM2
         }
     }
@@ -311,6 +312,7 @@ impl Pen {
         match self.device_model {
             DeviceModel::Remarkable2 => 20966,
             DeviceModel::RemarkablePaperPro => 15340,
+            DeviceModel::RemarkablePaperProMove => 11960,
             DeviceModel::Unknown => 20966, // Default to RM2
         }
     }
@@ -810,7 +812,7 @@ impl Pen {
         let y_normalized = y as f32 / VIRTUAL_HEIGHT as f32;
 
         match self.device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 let x_input = (x_normalized * self.max_x_value() as f32) as i32;
                 let y_input = (y_normalized * self.max_y_value() as f32) as i32;
                 (x_input, y_input)
@@ -821,5 +823,18 @@ impl Pen {
                 (x_input, y_input)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod device_geometry_tests {
+    use super::*;
+    #[test]
+    fn move_pen_uses_its_own_digitizer_range() {
+        let pen = Pen { device: None, device_model: DeviceModel::RemarkablePaperProMove };
+        assert_eq!((pen.max_x_value(), pen.max_y_value()), (6760, 11960));
+        assert_eq!(pen.virtual_to_input((384, 512)), (3380, 5980));
+        let pro = Pen { device: None, device_model: DeviceModel::RemarkablePaperPro };
+        assert_eq!((pro.max_x_value(), pro.max_y_value()), (11180, 15340));
     }
 }
