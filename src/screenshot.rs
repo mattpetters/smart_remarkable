@@ -296,7 +296,11 @@ impl Screenshot {
         // downstream — marquee detection, LLM crops, toolbar pixel checks,
         // placement planning — works in the orientation the user sees.
         // Pen/touch injection mirrors coordinates back (util::maybe_rot180_virtual).
-        let rotated = rotated.unwrap_or_else(|| Self::detect_ui_rotated(&resized_img));
+        let is_move = matches!(&self.mode, ScreenshotMode::Real { device_model: DeviceModel::RemarkablePaperProMove, .. });
+        // Move 3.29 has a horizontal portrait toolbar. The sidebar heuristic
+        // used by Paper Pro mistakes landscape chrome for a 180-degree turn.
+        // Keep its native orientation; UI actions explicitly require portrait.
+        let rotated = !is_move && rotated.unwrap_or_else(|| Self::detect_ui_rotated(&resized_img));
         crate::util::set_ui_rotated_180(rotated);
         let resized_img = if rotated { resized_img.rotate180() } else { resized_img };
 

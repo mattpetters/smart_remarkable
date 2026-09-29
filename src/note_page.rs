@@ -174,6 +174,9 @@ impl Ui<'_> {
 }
 
 pub async fn insert_after_current(touch: &mut Touch) -> Result<Screenshot> {
+    if DeviceModel::detect() == DeviceModel::RemarkablePaperProMove {
+        return insert_move_page(touch).await;
+    }
     ensure!(
         DeviceModel::detect() == DeviceModel::RemarkablePaperPro,
         "Note-page insertion currently supports Paper Pro only"
@@ -193,6 +196,34 @@ pub async fn insert_after_current(touch: &mut Touch) -> Result<Screenshot> {
     if hidden && Touch::screenshot_palette_open(&ui.capture()?) {
         ui.tap((28, 28)).await?;
     }
+    result?;
+    ui.capture()
+}
+
+// Move's portrait More menu exposes a direct, native Add page action. Capture
+// its actual label before the single creation tap, and verify clear canvas
+// before allowing the renderer to continue.
+async fn insert_move_page(touch: &mut Touch) -> Result<Screenshot> {
+    let mut ui = Ui { touch, rotated: false };
+    let initial = ui.capture()?;
+    ensure!(crate::move_ui::portrait_canvas(&initial), "Keep the Move in portrait with a notebook open");
+    let hidden = !crate::move_ui::toolbar_open(&initial);
+    if hidden { ui.tap(crate::move_ui::TOGGLE).await?; }
+    let result: Result<()> = async {
+        ui.tap(crate::move_ui::MORE).await?;
+        let menu = ui.wait_for("Move Add page menu", crate::move_ui::add_page_menu).await?;
+        let add = crate::move_ui::add_page_control(&menu).ok_or_else(|| anyhow::anyhow!("Move Add page control disappeared"))?;
+        ui.tap(add).await?; // Never repeat a page creation attempt.
+        let screen = ui.wait_for("new Move note canvas", |ss| {
+            crate::move_ui::toolbar_open(ss) && !crate::move_ui::add_page_menu(ss)
+        }).await?;
+        let clear = crate::page_layout::append_rect(&screen, crate::touch::Rect { x: 64, y: 80, w: 0, h: 0 })?;
+        ensure!(clear.y <= 100 && clear.h > 800, "New Move page is not blank; no answer ink drawn");
+        Ok(())
+    }.await;
+    // Dismiss a verified leftover menu on errors before restoring the pen.
+    if crate::move_ui::add_page_menu(&ui.capture()?) { ui.tap(crate::move_ui::MORE).await?; }
+    if hidden && crate::move_ui::toolbar_open(&ui.capture()?) { ui.tap(crate::move_ui::TOGGLE).await?; }
     result?;
     ui.capture()
 }

@@ -547,6 +547,9 @@ impl Touch {
     /// mistaking a ruled notebook template for an open toolbar.
     /// When palette is CLOSED, only the toggle circle is visible; y=80 is white canvas.
     pub(crate) fn screenshot_palette_open(ss: &Screenshot) -> bool {
+        if DeviceModel::detect() == DeviceModel::RemarkablePaperProMove {
+            return crate::move_ui::toolbar_open(ss);
+        }
         // A hidden toolbar exposes the notebook template. A ruled line can
         // contribute a few dark pixels here, so a single pixel is not evidence
         // that the palette is open. Scan the area: a hollow icon may have

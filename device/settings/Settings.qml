@@ -101,21 +101,29 @@ Rectangle {
         property string label
         property bool chosen: false
         signal picked()
-        width: 280; height: 86
+        width: Math.min(280, (settingsContent.width - 18) / 2); height: 86
         color: chosen ? "black" : "white"
         border.color: "black"; border.width: 2
         radius: 8
-        Text { anchors.centerIn: parent; text: choice.label; color: choice.chosen ? "white" : "black"; font.pixelSize: 28 }
+        Text { anchors.centerIn: parent; text: choice.label; color: choice.chosen ? "white" : "black"; font.pixelSize: Math.min(28, choice.width / 4.4) }
         TapHandler { gesturePolicy: TapHandler.ReleaseWithinBounds; onTapped: choice.picked() }
     }
     Rectangle {
+        id: settingsCard
         width: Math.min(parent.width - 80, 1040)
         height: Math.min(parent.height - 80, 1840)
         anchors.centerIn: parent
         color: "white"; border.color: "black"; border.width: 3; radius: 12
+        Flickable {
+            anchors.fill: parent; anchors.margins: 42
+            clip: true
+            contentWidth: width
+            contentHeight: settingsContent.height
+            boundsBehavior: Flickable.StopAtBounds
         Column {
-            x: 48; y: 42; width: parent.width - 96; spacing: 24
-            Text { text: "Notebook assistant"; font.pixelSize: 44; font.bold: true }
+            id: settingsContent
+            width: parent.width; spacing: 24
+            Text { text: "Notebook assistant"; font.pixelSize: Math.min(44, parent.width / 11); font.bold: true }
             Text { text: "Provider and model priority"; font.pixelSize: 30 }
             Repeater {
                 model: root.backendOrder
@@ -124,11 +132,11 @@ Rectangle {
                     required property int index
                     spacing: 12
                     Rectangle {
-                        width: 655; height: 100; color: "white"; border.color: "black"; radius: 8
+                        width: settingsContent.width - 214; height: 100; color: "white"; border.color: "black"; radius: 8
                         Column {
-                            x: 18; y: 12; spacing: 8
+                            x: 18; y: 12; spacing: 8; width: parent.width - 36
                             Text { text: (index + 1) + ". " + modelData; font.pixelSize: 28; font.bold: true }
-                            Text { text: root.modelName(modelData); font.pixelSize: 22; width: 620; elide: Text.ElideRight }
+                            Text { text: root.modelName(modelData); font.pixelSize: 22; width: parent.width; elide: Text.ElideRight }
                         }
                         TapHandler { onTapped: root.nextModel(modelData) }
                     }
@@ -146,9 +154,9 @@ Rectangle {
             Text { text: "Reply length"; font.pixelSize: 30 }
             Row {
                 spacing: 14
-                Choice { width: 245; label: "Brief"; chosen: root.selectedLength === "brief"; onPicked: root.selectedLength = "brief" }
-                Choice { width: 245; label: "Balanced"; chosen: root.selectedLength === "balanced"; onPicked: root.selectedLength = "balanced" }
-                Choice { width: 245; label: "Detailed"; chosen: root.selectedLength === "detailed"; onPicked: root.selectedLength = "detailed" }
+                Choice { width: (settingsContent.width - 28) / 3; label: "Brief"; chosen: root.selectedLength === "brief"; onPicked: root.selectedLength = "brief" }
+                Choice { width: (settingsContent.width - 28) / 3; label: "Balanced"; chosen: root.selectedLength === "balanced"; onPicked: root.selectedLength = "balanced" }
+                Choice { width: (settingsContent.width - 28) / 3; label: "Detailed"; chosen: root.selectedLength === "detailed"; onPicked: root.selectedLength = "detailed" }
             }
             Text { text: "Include visible-page context"; font.pixelSize: 30 }
             Row {
@@ -159,18 +167,19 @@ Rectangle {
             Text { text: "Answer ink"; font.pixelSize: 30 }
             Row {
                 spacing: 14
-                Choice { width: 205; label: "Blue"; chosen: root.inkColor === "blue"; onPicked: root.inkColor = "blue" }
-                Choice { width: 205; label: "Red"; chosen: root.inkColor === "red"; onPicked: root.inkColor = "red" }
-                Choice { width: 205; label: "Cyan"; chosen: root.inkColor === "cyan"; onPicked: root.inkColor = "cyan" }
-                Choice { width: 205; label: "Magenta"; chosen: root.inkColor === "magenta"; onPicked: root.inkColor = "magenta" }
+                Choice { width: (settingsContent.width - 42) / 4; label: "Blue"; chosen: root.inkColor === "blue"; onPicked: root.inkColor = "blue" }
+                Choice { width: (settingsContent.width - 42) / 4; label: "Red"; chosen: root.inkColor === "red"; onPicked: root.inkColor = "red" }
+                Choice { width: (settingsContent.width - 42) / 4; label: "Cyan"; chosen: root.inkColor === "cyan"; onPicked: root.inkColor = "cyan" }
+                Choice { width: (settingsContent.width - 42) / 4; label: "Magenta"; chosen: root.inkColor === "magenta"; onPicked: root.inkColor = "magenta" }
             }
-            Text { text: "Lasso your question, then tap Ask.\nAI opens settings. Four/five fingers also work."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
+            Text { text: "Lasso your question, then tap with four fingers.\nAI or five fingers opens settings."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
             Text { text: root.message; font.pixelSize: 24; width: parent.width; wrapMode: Text.WordWrap; height: 70 }
             Row {
                 spacing: 18
                 Choice { label: "Close"; onPicked: root.closePanel() }
                 Choice { label: "Save"; chosen: true; onPicked: root.save() }
             }
+        }
         }
     }
 }

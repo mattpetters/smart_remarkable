@@ -3,6 +3,7 @@ import QtQml
 
 Rectangle {
     id: button
+    property bool compact: false
     property bool sendSelection: false
     property bool available: false
     property bool busy: false
@@ -59,7 +60,7 @@ Rectangle {
     Text {
         anchors.centerIn: parent
         text: button.sendSelection ? (button.busy ? "..." : "Ask") : "AI"
-        font.pixelSize: Math.min(button.width * 0.30, 32)
+        font.pixelSize: button.compact ? 24 : Math.min(button.width * 0.30, 32)
         font.bold: true
         color: button.available && !button.busy && !button.panelOpen ? "black" : "#888888"
     }

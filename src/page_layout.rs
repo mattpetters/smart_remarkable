@@ -10,10 +10,12 @@ const HEIGHT: usize = 1024;
 const PAGE_BOTTOM: usize = 980;
 
 fn ink_mask(screen: &Screenshot) -> Vec<bool> {
-    let left = if Touch::screenshot_palette_open(screen) { 60 } else { 10 };
+    let is_move = crate::device::DeviceModel::detect() == crate::device::DeviceModel::RemarkablePaperProMove;
+    let top = if is_move { 80 } else { 55 };
+    let left = if !is_move && Touch::screenshot_palette_open(screen) { 60 } else { 10 };
     let right = WIDTH - 10;
     let mut ink = vec![false; WIDTH * HEIGHT];
-    for y in 55..PAGE_BOTTOM {
+    for y in top..PAGE_BOTTOM {
         for x in left..right {
             ink[y * WIDTH + x] = screen
                 .get_pixel(x as u32, y as u32)
@@ -29,7 +31,7 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
     // Remove long continuous rules/grid lines. Dotted templates are rejected
     // later as tiny components. Text crossing a rule remains on adjacent rows.
     let mut rules = vec![false; WIDTH * HEIGHT];
-    for y in 55..PAGE_BOTTOM {
+    for y in top..PAGE_BOTTOM {
         let mut start = left;
         while start < right {
             if !ink[y * WIDTH + start] {
@@ -47,7 +49,7 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
         }
     }
     for x in left..right {
-        let mut start = 55;
+        let mut start = top;
         while start < PAGE_BOTTOM {
             if !ink[start * WIDTH + x] {
                 start += 1;
@@ -75,7 +77,7 @@ fn ink_mask(screen: &Screenshot) -> Vec<bool> {
     let mut cleaned = vec![false; WIDTH * HEIGHT];
     let mut stack = Vec::new();
     let mut component = Vec::new();
-    for y in 55..PAGE_BOTTOM {
+    for y in top..PAGE_BOTTOM {
         for x in left..right {
             let seed = y * WIDTH + x;
             if !ink[seed] {
@@ -124,7 +126,8 @@ pub fn append_rect(screen: &Screenshot, selection: Rect) -> Result<Rect> {
 }
 
 fn rect_after(last: i32, x: i32) -> Result<Rect> {
-    let y = last + 16;
+    let top = if crate::device::DeviceModel::detect() == crate::device::DeviceModel::RemarkablePaperProMove { 80 } else { 55 };
+    let y = last.max(top) + 16;
     let h = PAGE_BOTTOM as i32 - 10 - y;
     ensure!(
         h >= 96,

@@ -1,0 +1,36 @@
+; Notebook assistant panel. Document-view insertion target for Move firmware 3.29.
+; Requires XOVI qt-resource-rebuilder with a hashtable for the current firmware.
+AFFECT [[17298303916558156758]]
+    TRAVERSE [[254504370080162629]]
+        LOCATE BEFORE ALL
+        INSERT {
+            Loader {
+                id: assistantPanelLoader
+                anchors.fill: parent
+                z: 1000000
+                source: "file:///home/root/smart-remarkable/Settings.qml"
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+; The Move's top toolbar has room for one compact settings control in its
+; existing spacer. Keep pen/eraser/selection/More coordinates unchanged.
+; Four fingers still sends the lassoed question.
+AFFECT [[11313888899523275277]]
+    TRAVERSE [[8397993708429497603]] > [[6502786168]][.[[5972374]]=[[233745975898428]]] > [[8398044571386570029]]
+        LOCATE BEFORE Item
+        INSERT {
+            Loader {
+                id: assistantSettingsLoader
+                Layout.preferredWidth: 50
+                Layout.preferredHeight: root.minSize.height
+                visible: root.expanded
+                source: "file:///home/root/smart-remarkable/AssistantButton.qml"
+                onLoaded: item.compact = true
+                Connections { target: assistantSettingsLoader.item; function onActivated() { root.closeFoldout() } }
+                PenInputBlocker { anchors.fill: parent; enabled: parent.visible; manager: root.penInput.surfaceManager }
+            }
+        }
+    END TRAVERSE
+END AFFECT

@@ -116,6 +116,7 @@ struct DeviceUi {
     touch: Touch,
     rotated: bool,
     icon: Option<Vec<bool>>,
+    is_move: bool,
 }
 
 fn tool_icon(ss: &Screenshot, y: i32) -> Vec<bool> {
@@ -159,6 +160,24 @@ impl DeviceUi {
 impl Ui for DeviceUi {
     async fn read(&mut self) -> Result<State> {
         let ss = self.capture()?;
+        if self.is_move {
+            let m = &ss;
+            ensure!(crate::move_ui::portrait_canvas(m), "Keep the Move in portrait with a notebook open");
+            let toolbar = crate::move_ui::toolbar_open(m);
+            let tool_y = crate::move_ui::selected_tool(m);
+            let popover = crate::move_ui::popover(m);
+            let settings = if tool_y == Some(80) && popover {
+                match (
+                    crate::move_ui::selected_cell(m, &crate::move_ui::TYPES),
+                    crate::move_ui::selected_cell(m, &crate::move_ui::SIZES),
+                    crate::move_ui::selected_cell(m, &crate::move_ui::COLORS),
+                ) {
+                    (Some(kind), Some(size), Some(color)) => Some(Settings { kind, size, color }),
+                    _ => None,
+                }
+            } else { None };
+            return Ok(State { toolbar, tool_y, popover, settings });
+        }
         let toolbar = Touch::screenshot_palette_open(&ss);
         // Preserve the detected selection's position generically, including
         // tools this client does not name. Only the temporary pen slot needs
@@ -178,13 +197,22 @@ impl Ui for DeviceUi {
     }
 
     async fn tap(&mut self, point: (i32, i32)) -> Result<()> {
+        let point = if self.is_move {
+            if point == TOGGLE { crate::move_ui::TOGGLE }
+            else if point == PEN { crate::move_ui::PEN }
+            else if point.0 == 28 { (point.1, 34) }
+            else if let Some(i) = TYPES.iter().position(|p| *p == point) { crate::move_ui::TYPES[i] }
+            else if let Some(i) = SIZES.iter().position(|p| *p == point) { crate::move_ui::SIZES[i] }
+            else if let Some(i) = COLORS.iter().position(|p| *p == point) { crate::move_ui::COLORS[i] }
+            else { anyhow::bail!("Unknown Move pen control") }
+        } else { point };
         self.touch.tap(point).await
     }
 
     async fn remember_tool(&mut self, y: i32) -> Result<()> {
         // The two pen slots stay fixed. Other tools shift when PDFs gain a
         // native note page (which includes a Text tool); retain their actual icon.
-        if y >= 160 {
+        if !self.is_move && y >= 160 {
             self.icon = Some(tool_icon(&self.capture()?, y));
         }
         Ok(())
@@ -383,8 +411,8 @@ where
     Fut: Future<Output = Result<T>>,
 {
     ensure!(
-        matches!(DeviceModel::detect(), DeviceModel::RemarkablePaperPro),
-        "Temporary answer pen currently supports Paper Pro only"
+        DeviceModel::detect().is_color(),
+        "Temporary answer pen requires Paper Pro or Move"
     );
     log::info!("Answer ink color: {:?}", color);
     with_ui(
@@ -392,6 +420,7 @@ where
             touch: Touch::new(false, TriggerCorner::UpperRight),
             rotated: crate::util::ui_rotated_180(),
             icon: None,
+            is_move: DeviceModel::detect() == DeviceModel::RemarkablePaperProMove,
         },
         color,
         operation,
