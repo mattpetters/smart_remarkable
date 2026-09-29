@@ -172,7 +172,7 @@ Rectangle {
                 Choice { width: (settingsContent.width - 42) / 4; label: "Cyan"; chosen: root.inkColor === "cyan"; onPicked: root.inkColor = "cyan" }
                 Choice { width: (settingsContent.width - 42) / 4; label: "Magenta"; chosen: root.inkColor === "magenta"; onPicked: root.inkColor = "magenta" }
             }
-            Text { text: "Lasso your question, then tap with four fingers.\nAI or five fingers opens settings."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
+            Text { text: "Lasso your question, then tap Ask (Move selection menu) or use four fingers.\nAI or five fingers opens settings."; font.pixelSize: 24; wrapMode: Text.WordWrap; width: parent.width }
             Text { text: root.message; font.pixelSize: 24; width: parent.width; wrapMode: Text.WordWrap; height: 70 }
             Row {
                 spacing: 18

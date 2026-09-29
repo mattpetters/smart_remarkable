@@ -30,8 +30,12 @@ For the native settings panel, install `device/settings/settings-move.qmd` as
 `AssistantButton.qml`, and `activate.sh` (renamed `settings-ui.sh`). Run the
 activation helper while idle; it builds a firmware-specific QML hashtable and
 restarts xochitl. It adds one compact AI button in the Move's toolbar spacer.
-The panel scrolls to fit the smaller screen. Four fingers sends a lassoed
-question; five fingers or AI opens settings.
+The panel scrolls to fit the smaller screen. Lasso a question and tap **Ask**
+in the native selection menu alongside Cut/Copy/Delete. The selection remains
+intact until capture, and the existing request latch rejects extra sends while
+busy. Four fingers remains an alternative; five fingers or AI opens settings.
+The toolbar adapter detects small vertical offsets introduced by toolbar layout
+changes, and the compact AI button respects the toolbar's gesture margin.
 
 The Mac supervisor restores the registered-capture/settings extension and
 listener after reconnect or tablet reboot, provided the notebook firmware

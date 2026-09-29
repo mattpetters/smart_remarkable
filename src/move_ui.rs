@@ -46,31 +46,45 @@ pub fn control_matches(ss: &Screenshot, png: &[u8], x: u32, y: u32) -> bool {
     shared * 200 >= (actual + expected).max(1) * 86
 }
 
-pub fn portrait_canvas(ss: &Screenshot) -> bool {
+/// Detect the small vertical displacement introduced by native toolbar layouts.
+/// A strict match still rejects landscape, lock screens, and relocated toolbars.
+pub fn portrait_offset(ss: &Screenshot) -> Option<i32> {
     let reference = image::load_from_memory(include_bytes!("../assets/ui/move-toolbar-toggle.png"))
         .unwrap()
         .to_luma8();
-    let (mut actual, mut expected, mut shared) = (0, 0, 0);
-    for (x, y, pixel) in reference.enumerate_pixels() {
-        // The dot inside the toggle moves when the toolbar is hidden.
-        if (7..28).contains(&x) && (7..23).contains(&y) {
-            continue;
+    let mut best = (0, 0);
+    for offset in 0..=16 {
+        let (mut actual, mut expected, mut shared) = (0, 0, 0);
+        for (x, y, pixel) in reference.enumerate_pixels() {
+            // The dot inside the toggle moves when the toolbar is hidden.
+            if (7..28).contains(&x) && (7..23).contains(&y) {
+                continue;
+            }
+            let a = dark(ss, x as i32 + 28, y as i32 + 19 + offset);
+            let b = pixel.0[0] < 100;
+            actual += usize::from(a);
+            expected += usize::from(b);
+            shared += usize::from(a && b);
         }
-        let a = dark(ss, x as i32 + 28, y as i32 + 19);
-        let b = pixel.0[0] < 100;
-        actual += usize::from(a);
-        expected += usize::from(b);
-        shared += usize::from(a && b);
+        let score = shared * 2000 / (actual + expected).max(1);
+        if score > best.1 {
+            best = (offset, score);
+        }
     }
-    shared * 200 >= (actual + expected).max(1) * 90
+    (best.1 >= 900).then_some(best.0)
+}
+
+pub fn portrait_canvas(ss: &Screenshot) -> bool {
+    portrait_offset(ss).is_some()
 }
 
 pub fn selected_tool(ss: &Screenshot) -> Option<i32> {
     // Logical pen ID 80 is shared with the restoration state machine. Other
     // tool IDs are their horizontal positions in the Move's fixed toolbar.
+    let offset = portrait_offset(ss)?;
     let mut tools = [(134, 80), (224, 224), (313, 313)]
         .into_iter()
-        .filter_map(|(x, id)| [x - 30, x, x + 30].iter().all(|&xx| dark(ss, xx, 60)).then_some(id));
+        .filter_map(|(x, id)| [x - 30, x, x + 30].iter().all(|&xx| dark(ss, xx, 60 + offset)).then_some(id));
     let first = tools.next()?;
     tools.next().is_none().then_some(first)
 }
@@ -80,14 +94,20 @@ pub fn toolbar_open(ss: &Screenshot) -> bool {
 }
 
 pub fn popover(ss: &Screenshot) -> bool {
-    [90, 409].iter().all(|&x| [100, 200, 300, 450, 600].iter().all(|&y| dark(ss, x, y)))
+    let Some(offset) = portrait_offset(ss) else {
+        return false;
+    };
+    [90, 409].iter().all(|&x| [100, 200, 300, 450, 600].iter().all(|&y| dark(ss, x, y + offset)))
 }
 
 pub fn selected_cell(ss: &Screenshot, cells: &[(i32, i32)]) -> Option<usize> {
-    let mut matches = cells
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &(x, y))| [-30, 30].iter().all(|dx| [-24, 24].iter().all(|dy| dark(ss, x + dx, y + dy))).then_some(index));
+    let offset = portrait_offset(ss)?;
+    let mut matches = cells.iter().enumerate().filter_map(|(index, &(x, y))| {
+        [-30, 30]
+            .iter()
+            .all(|dx| [-24, 24].iter().all(|dy| dark(ss, x + dx, y + dy + offset)))
+            .then_some(index)
+    });
     let first = matches.next()?;
     matches.next().is_none().then_some(first)
 }
@@ -189,6 +209,34 @@ mod tests {
                 image::imageops::overlay(im, &add, 373, y);
             });
             assert_eq!(add_page_control(&ss), Some((512, y as i32 + 20)));
+        }
+    }
+    #[test]
+    fn follows_toolbar_offset_after_extension_and_visibility_changes() {
+        let source = screen(|im| {
+            for yy in 0..68 {
+                for xx in 269..359 {
+                    im.put_pixel(xx, yy, image::Rgb([0; 3]));
+                }
+            }
+            cell(im, COLORS[3].0, COLORS[3].1);
+        });
+        let mut decoded = image::RgbImage::from_pixel(768, 1024, image::Rgb([255; 3]));
+        for y in 0..1024 {
+            for x in 0..768 {
+                let (r, g, b) = source.get_pixel(x, y).unwrap();
+                decoded.put_pixel(x, y, image::Rgb([r, g, b]));
+            }
+        }
+        for offset in [0, 6, 10, 16] {
+            let mut shifted = image::RgbImage::from_pixel(768, 1024, image::Rgb([255; 3]));
+            image::imageops::overlay(&mut shifted, &decoded, 0, offset);
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(shifted).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            let ss = Screenshot::from_png_data(bytes.into_inner());
+            assert_eq!(portrait_offset(&ss), Some(offset as i32));
+            assert_eq!(selected_tool(&ss), Some(313));
+            assert_eq!(selected_cell(&ss, &COLORS), Some(3));
         }
     }
     #[test]

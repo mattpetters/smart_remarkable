@@ -117,6 +117,7 @@ struct DeviceUi {
     rotated: bool,
     icon: Option<Vec<bool>>,
     is_move: bool,
+    move_offset: i32,
 }
 
 fn tool_icon(ss: &Screenshot, y: i32) -> Vec<bool> {
@@ -162,7 +163,7 @@ impl Ui for DeviceUi {
         let ss = self.capture()?;
         if self.is_move {
             let m = &ss;
-            ensure!(crate::move_ui::portrait_canvas(m), "Keep the Move in portrait with a notebook open");
+            self.move_offset = crate::move_ui::portrait_offset(m).context("Keep the Move in portrait with a notebook open")?;
             let toolbar = crate::move_ui::toolbar_open(m);
             let tool_y = crate::move_ui::selected_tool(m);
             let popover = crate::move_ui::popover(m);
@@ -206,6 +207,7 @@ impl Ui for DeviceUi {
             else if let Some(i) = COLORS.iter().position(|p| *p == point) { crate::move_ui::COLORS[i] }
             else { anyhow::bail!("Unknown Move pen control") }
         } else { point };
+        let point = if self.is_move { (point.0, point.1 + self.move_offset) } else { point };
         self.touch.tap(point).await
     }
 
@@ -421,6 +423,7 @@ where
             rotated: crate::util::ui_rotated_180(),
             icon: None,
             is_move: DeviceModel::detect() == DeviceModel::RemarkablePaperProMove,
+            move_offset: 0,
         },
         color,
         operation,

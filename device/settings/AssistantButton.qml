@@ -4,6 +4,7 @@ import QtQml
 Rectangle {
     id: button
     property bool compact: false
+    property bool pollWhenHidden: false
     property bool sendSelection: false
     property bool available: false
     property bool busy: false
@@ -56,7 +57,7 @@ Rectangle {
         })
     }
     Component.onCompleted: refresh()
-    Timer { interval: 750; repeat: true; running: button.visible; onTriggered: button.refresh() }
+    Timer { interval: 750; repeat: true; running: button.visible || button.pollWhenHidden; onTriggered: button.refresh() }
     Text {
         anchors.centerIn: parent
         text: button.sendSelection ? (button.busy ? "..." : "Ask") : "AI"

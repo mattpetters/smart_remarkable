@@ -24,12 +24,42 @@ AFFECT [[11313888899523275277]]
             Loader {
                 id: assistantSettingsLoader
                 Layout.preferredWidth: 50
-                Layout.preferredHeight: root.minSize.height
+                Layout.preferredHeight: root.minSize.height - root.gestureMargin
                 visible: root.expanded
                 source: "file:///home/root/smart-remarkable/AssistantButton.qml"
                 onLoaded: item.compact = true
                 Connections { target: assistantSettingsLoader.item; function onActivated() { root.closeFoldout() } }
                 PenInputBlocker { anchors.fill: parent; enabled: parent.visible; manager: root.penInput.surfaceManager }
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+
+; The native selection menu sizes and positions Ask alongside Cut/Copy/Delete.
+; Keep the selection intact until the client captures it. Reuse the same local
+; request latch and busy state as toolbar sends, so repeated taps cannot queue.
+AFFECT [[3197972396468700595]]
+    TRAVERSE [[6502786168]] > [[12395602925408354507]]
+        LOCATE BEFORE ALL
+        INSERT {
+            ArkControls.ContextualMenu.Button {
+                id: assistantSelectionAsk
+                objectName: "assistantSelectionAsk"
+                focusPolicy: Qt.NoFocus
+                type: tools.type
+                text: assistantSelectionRequest.item && assistantSelectionRequest.item.busy ? "..." : "Ask"
+                enabled: assistantSelectionRequest.item && assistantSelectionRequest.item.available && !assistantSelectionRequest.item.busy && !assistantSelectionRequest.item.waiting && !assistantSelectionRequest.item.panelOpen
+                onClicked: assistantSelectionRequest.item.activate()
+                Loader {
+                    id: assistantSelectionRequest
+                    visible: false
+                    source: "file:///home/root/smart-remarkable/AssistantButton.qml"
+                    onLoaded: {
+                        item.sendSelection = true
+                        item.pollWhenHidden = true
+                    }
+                }
             }
         }
     END TRAVERSE
