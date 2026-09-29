@@ -638,6 +638,12 @@ pub fn setup_uinput() -> Result<()> {
     let device_model = DeviceModel::detect();
     info!("Device model detected: {}", device_model.name());
 
+    if device_model == DeviceModel::RemarkablePaperProMove {
+        anyhow::ensure!(std::path::Path::new("/dev/uinput").exists(),
+            "Paper Pro Move requires the firmware's uinput device; Paper Pro kernel modules are incompatible");
+        return Ok(());
+    }
+
     if device_model != DeviceModel::RemarkablePaperPro {
         info!("Not a Paper Pro, skipping uinput module check and installation");
         return Ok(());

@@ -28,6 +28,34 @@ class AvailabilityTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
         self.service = Service(repo=self.root / "r", home=self.root / "h")
 
+    def test_separate_tablet_has_independent_tunnel_token_and_login_service(self):
+        with patch.dict(os.environ, {"REMARKABLE_INSTANCE": "move", "REMARKABLE_BRIDGE_PORT": "8767"}):
+            move = Service(repo=self.root / "r", home=self.root / "h")
+        self.assertNotEqual(move.socket, self.service.socket)
+        self.assertNotEqual(move.token, self.service.token)
+        self.assertNotEqual(move.plist, self.service.plist)
+        self.assertEqual(move.local_port, 8767)
+        self.assertEqual(self.service.local_port, 8765)
+        health = {"status": "ready", "backend": "codex", "response_mode": "ink"}
+        with patch.object(move, "tunnel_alive", return_value=False), \
+             patch.object(move, "require") as connect, \
+             patch.object(move, "ssh", return_value=result(json.dumps(health))), \
+             patch.object(move, "health", return_value=health):
+            move.ensure_tunnel()
+        self.assertIn("127.0.0.1:8765:127.0.0.1:8767", connect.call_args.args[0])
+        with patch.object(move, "agent_loaded", return_value=False), patch.object(move, "load_agent"):
+            move.install()
+        config = plistlib.loads(move.plist.read_bytes())
+        self.assertEqual(config["Label"], LABEL + ".move")
+        self.assertEqual(config["EnvironmentVariables"]["REMARKABLE_INSTANCE"], "move")
+        self.assertEqual(config["EnvironmentVariables"]["REMARKABLE_BRIDGE_PORT"], "8767")
+
+    def test_separate_tablet_cannot_accidentally_reuse_the_default_bridge_port(self):
+        for instance, port in [("move", ""), ("move", "8765"), ("../move", "8767"), ("move", "invalid"), ("move", "70000")]:
+            with patch.dict(os.environ, {"REMARKABLE_INSTANCE": instance, "REMARKABLE_BRIDGE_PORT": port}):
+                with self.assertRaises(Unavailable):
+                    Service(repo=self.root / "r", home=self.root / "h")
+
     def test_reconnect_tries_alternate_address_without_restarting_listener(self):
         self.service.hosts = ["tablet-tailnet", "tablet-lan"]
         attempted=[]

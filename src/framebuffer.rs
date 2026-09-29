@@ -10,15 +10,25 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn config(text: &str) -> Result<(u64, usize)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Config {
+    address: u64,
+    width: u32,
+    height: u32,
+    stride: usize,
+}
+
+fn config(text: &str) -> Result<Config> {
     let fields: Vec<_> = text.trim().split(',').collect();
     ensure!(fields.len() == 6, "Framebuffer metadata unavailable");
     let address = u64::from_str_radix(fields[0].strip_prefix("0x").context("Invalid framebuffer pointer")?, 16)?;
-    ensure!(
-        address > 4096 && fields[1] == "1620" && fields[2] == "2160" && fields[3] == "2" && fields[4] == "6528" && fields[5] == "0",
-        "Unsupported framebuffer geometry"
-    );
-    Ok((address, 6528))
+    ensure!(address > 4096 && fields[3] == "2" && fields[5] == "0", "Unsupported framebuffer format");
+    let (width, height, stride) = match (fields[1], fields[2], fields[4]) {
+        ("1620", "2160", "6528") => (1620, 2160, 6528),
+        ("960", "1696", "3840") => (960, 1696, 3840),
+        _ => anyhow::bail!("Unsupported framebuffer geometry"),
+    };
+    Ok(Config { address, width, height, stride })
 }
 
 fn packed_rgba(raw: &[u8], width: usize, stride: usize) -> Result<Vec<u8>> {
@@ -35,10 +45,10 @@ fn packed_rgba(raw: &[u8], width: usize, stride: usize) -> Result<Vec<u8>> {
 #[derive(Default)]
 struct CachedConfig {
     process: String,
-    value: Option<(u64, usize)>,
+    value: Option<Config>,
 }
 impl CachedConfig {
-    fn get(&mut self, process: &str, read: impl FnOnce() -> Result<(u64, usize)>) -> Result<(u64, usize)> {
+    fn get(&mut self, process: &str, read: impl FnOnce() -> Result<Config>) -> Result<Config> {
         if self.process == process {
             if let Some(value) = self.value {
                 return Ok(value);
@@ -55,7 +65,7 @@ static CACHE: Mutex<CachedConfig> = Mutex::new(CachedConfig {
     value: None,
 });
 
-fn query_config() -> Result<(u64, usize)> {
+fn query_config() -> Result<Config> {
     // Serialize our capture processes because XOVI has one shared reply FIFO.
     let lock = OpenOptions::new()
         .read(true)
@@ -108,17 +118,17 @@ pub fn capture_png(pid: &str) -> Result<Option<Vec<u8>>> {
     // The module registers one stable buffer per xochitl process. Query once,
     // including process start time so a reused PID never reuses an old address.
     let process = format!("{pid}:{start}");
-    let (address, stride) = CACHE
+    let Config { address, width, height, stride } = CACHE
         .lock()
         .map_err(|_| anyhow::anyhow!("Framebuffer cache unavailable"))?
         .get(&process, query_config)?;
-    let mut raw = vec![0; stride * 2160];
+    let mut raw = vec![0; stride * height as usize];
     let mut memory = std::fs::File::open(format!("/proc/{pid}/mem"))?;
     memory.seek(SeekFrom::Start(address))?;
     memory.read_exact(&mut raw)?;
-    let rgba = packed_rgba(&raw, 1620, stride)?;
+    let rgba = packed_rgba(&raw, width as usize, stride)?;
     let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png).write_image(&rgba, 1620, 2160, image::ExtendedColorType::Rgba8)?;
+    image::codecs::png::PngEncoder::new(&mut png).write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)?;
     Ok(Some(png))
 }
 
@@ -128,17 +138,21 @@ mod tests {
     #[test]
     fn metadata_is_reused_only_for_the_same_process_lifetime() {
         let mut cache = CachedConfig::default();
-        assert_eq!(cache.get("123:1", || Ok((5000, 6528))).unwrap().0, 5000);
-        assert_eq!(cache.get("123:1", || panic!("must not query twice")).unwrap().0, 5000);
-        assert_eq!(cache.get("123:2", || Ok((9000, 6528))).unwrap().0, 9000);
+        let initial = config("0x12340000,1620,2160,2,6528,0").unwrap();
+        let changed = config("0x56780000,960,1696,2,3840,0").unwrap();
+        assert_eq!(cache.get("123:1", || Ok(initial)).unwrap(), initial);
+        assert_eq!(cache.get("123:1", || panic!("must not query twice")).unwrap(), initial);
+        assert_eq!(cache.get("123:2", || Ok(changed)).unwrap(), changed);
     }
     #[test]
     fn validates_actual_geometry_and_removes_row_padding_without_shifting_pixels() {
-        assert_eq!(config("0x12340000,1620,2160,2,6528,0").unwrap(), (0x12340000, 6528));
+        assert_eq!(config("0x12340000,1620,2160,2,6528,0").unwrap(), Config { address: 0x12340000, width: 1620, height: 2160, stride: 6528 });
+        assert_eq!(config("0x12340000,960,1696,2,3840,0").unwrap(), Config { address: 0x12340000, width: 960, height: 1696, stride: 3840 });
         for value in [
             "NULL",
             "0x0,1620,2160,2,6528,0",
-            "0x12340000,960,1696,2,3840,0",
+            "0x12340000,960,1696,2,6528,0",
+            "0x12340000,960,1696,1,3840,0",
             "0x12340000,1620,2160,2,6528,1",
         ] {
             assert!(config(value).is_err());

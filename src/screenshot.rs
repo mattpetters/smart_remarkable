@@ -52,6 +52,7 @@ impl Screenshot {
         match device_model {
             DeviceModel::Remarkable2 => 1872,
             DeviceModel::RemarkablePaperPro => 1632,
+            DeviceModel::RemarkablePaperProMove => 960,
             DeviceModel::Unknown => 1872, // Default to RM2
         }
     }
@@ -64,6 +65,7 @@ impl Screenshot {
         match device_model {
             DeviceModel::Remarkable2 => 1404,
             DeviceModel::RemarkablePaperPro => 2154,
+            DeviceModel::RemarkablePaperProMove => 1696,
             DeviceModel::Unknown => 1404, // Default to RM2
         }
     }
@@ -75,7 +77,7 @@ impl Screenshot {
         };
         match device_model {
             DeviceModel::Remarkable2 => Self::detect_rm2_bytes_per_pixel(),
-            DeviceModel::RemarkablePaperPro => 4,
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => 4,
             DeviceModel::Unknown => 2, // Default to RM2
         }
     }
@@ -139,12 +141,14 @@ impl Screenshot {
         // Find framebuffer location in memory
         debug!("screenshot: finding address");
         let registered_frame = match &self.mode {
-            ScreenshotMode::Real { device_model: DeviceModel::RemarkablePaperPro, .. } => crate::framebuffer::capture_png(&pid)?,
+            ScreenshotMode::Real { device_model, .. } if device_model.is_color() => crate::framebuffer::capture_png(&pid)?,
             _ => None,
         };
         let processed_data = if let Some(png) = registered_frame {
             self.process_png(png, rotated)?
         } else {
+            anyhow::ensure!(DeviceModel::detect() != DeviceModel::RemarkablePaperProMove,
+                "Paper Pro Move requires the registered framebuffer capture extension");
             let skip_bytes = self.find_framebuffer_address(&pid)?;
             let screenshot_data = self.read_framebuffer(&pid, skip_bytes)?;
             self.process_image(screenshot_data, rotated)?
@@ -179,7 +183,7 @@ impl Screenshot {
             ScreenshotMode::Simulated { .. } => &DeviceModel::Unknown, // Default for simulation
         };
         match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 // For RMPP (arm64), we need to use the approach from pointer_arm64.go
                 let start_address = self.get_memory_range(pid)?;
                 let frame_pointer = self.calculate_frame_pointer(pid, start_address)?;
@@ -307,7 +311,7 @@ impl Screenshot {
             ScreenshotMode::Simulated { .. } => &DeviceModel::Unknown, // Default for simulation
         };
         match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 encoder.write_image(
                     resized_img.as_rgba8().unwrap().as_raw(),
                     VIRTUAL_WIDTH,
@@ -361,7 +365,7 @@ impl Screenshot {
             ScreenshotMode::Simulated { .. } => &DeviceModel::Unknown, // Default for simulation
         };
         match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 // RMPP uses 32-bit RGBA format
                 self.encode_png_rmpp(raw_data)
             }

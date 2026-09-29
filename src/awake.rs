@@ -9,7 +9,7 @@ pub struct RequestWakeLock {
 
 impl RequestWakeLock {
     pub fn acquire(enabled: bool) -> Result<Option<Self>> {
-        if !enabled || !matches!(crate::device::DeviceModel::detect(), crate::device::DeviceModel::RemarkablePaperPro) {
+        if !enabled || !crate::device::DeviceModel::detect().is_color() {
             return Ok(None);
         }
         Self::at(Path::new("/sys/power")).map(Some)

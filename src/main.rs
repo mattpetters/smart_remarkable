@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
         .init();
 
     setup_uinput()?;
-    if smart_remarkable::device::DeviceModel::detect() == smart_remarkable::device::DeviceModel::RemarkablePaperPro {
+    if smart_remarkable::device::DeviceModel::detect().is_color() {
         smart_remarkable::preferences::start();
     }
 

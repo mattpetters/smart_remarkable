@@ -2,7 +2,12 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-runtime="$repo/tmp/lan-client"
+instance=${REMARKABLE_INSTANCE:-}
+if [[ -n "$instance" && ! "$instance" =~ ^[a-z][a-z0-9-]{0,20}$ ]]; then
+  echo 'Invalid tablet instance name' >&2
+  exit 2
+fi
+runtime="$repo/tmp/lan-client${instance:+-$instance}"
 device_host=${REMARKABLE_HOST:-rmpp-wifi}
 remote=/home/root/smart-remarkable
 mkdir -p "$runtime"

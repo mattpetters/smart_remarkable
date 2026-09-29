@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shlex
 import shutil
 import signal
@@ -32,10 +33,26 @@ class Service:
     def __init__(self, repo=None, home=None):
         self.repo = Path(repo or Path(__file__).resolve().parents[1])
         self.home = Path(home or Path.home())
-        self.runtime = self.repo / "tmp/lan-client"
+        self.instance = os.environ.get("REMARKABLE_INSTANCE", "")
+        if self.instance and not re.fullmatch(r"[a-z][a-z0-9-]{0,20}", self.instance):
+            raise Unavailable("Invalid tablet instance name")
+        suffix = "-" + self.instance if self.instance else ""
+        self.label = LABEL + ("." + self.instance if self.instance else "")
+        self.runtime = self.repo / ("tmp/lan-client" + suffix)
         self.storage = self.home / "Library/Application Support/Smart Remarkable"
+        if self.instance:
+            self.storage = self.storage / self.instance
+        raw_port = os.environ.get("REMARKABLE_BRIDGE_PORT")
+        try:
+            self._local_port = int(raw_port) if raw_port else None
+        except ValueError:
+            raise Unavailable("Invalid local bridge port") from None
+        if self._local_port is not None and not 1024 <= self._local_port <= 65535:
+            raise Unavailable("Invalid local bridge port")
+        if self.instance and (self._local_port is None or self._local_port == PORT):
+            raise Unavailable("A separate tablet instance requires its own local bridge port")
         self.token = self.storage / "bridge.token"
-        self.plist = self.home / "Library/LaunchAgents" / (LABEL + ".plist")
+        self.plist = self.home / "Library/LaunchAgents" / (self.label + ".plist")
         self.socket = self.runtime / "ssh.sock"
         self.host = os.environ.get("REMARKABLE_HOST", "rmpp-wifi")
         self.hosts = list(dict.fromkeys([self.host] + [h for h in os.environ.get("REMARKABLE_FALLBACK_HOSTS", "").split(",") if h]))
@@ -43,7 +60,7 @@ class Service:
         self.model = os.environ.get("REMARKABLE_CODEX_MODEL", "")
         self.codex = os.environ.get("REMARKABLE_CODEX_BIN") or shutil.which("codex")
         self.domain = "gui/" + str(os.getuid())
-        self.job = self.domain + "/" + LABEL
+        self.job = self.domain + "/" + self.label
         self.bridge_failures = 0
         if self.mode not in ("ink", "text"):
             raise Unavailable("REMARKABLE_RESPONSE_MODE must be ink or text")
@@ -54,6 +71,10 @@ class Service:
             raise Unavailable("Repository path is too long for the SSH control socket")
         self.runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.runtime.chmod(0o700)
+
+    @property
+    def local_port(self):
+        return self._local_port if self._local_port is not None else PORT
 
     def run(self, args, *, input=None, timeout=15):
         # Output can contain credentials when writing device.env. Never log it.
@@ -111,7 +132,7 @@ class Service:
 
     def health(self):
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=2) as response:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.local_port}/health", timeout=2) as response:
                 return json.load(response)
         except (OSError, ValueError):
             return None
@@ -130,7 +151,7 @@ class Service:
         health, pid = self.health(), self.owned_bridge_pid()
         if health is not None:
             if not pid or health != {"status": "ready", "backend": "codex", "response_mode": self.mode}:
-                raise Unavailable("Port 8765 belongs to another bridge or mode; stop it before changing configuration")
+                raise Unavailable(f"Port {self.local_port} belongs to another bridge or mode; stop it before changing configuration")
             self.bridge_failures = 0
             return
         if pid:
@@ -151,11 +172,11 @@ class Service:
                 # Match HTTPServer's reuse policy so recent closed connections
                 # do not block a bridge reload while in TCP TIME_WAIT.
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                probe.bind(("127.0.0.1", PORT))
+                probe.bind(("127.0.0.1", self.local_port))
         except OSError:
-            raise Unavailable("Port 8765 is occupied; leaving the other process alone") from None
+            raise Unavailable(f"Port {self.local_port} is occupied; leaving the other process alone") from None
         args = [sys.executable, str(self.repo / "bridge/codex_bridge.py"),
-                "--token-file", str(self.token), "--port", str(PORT),
+                "--token-file", str(self.token), "--port", str(self.local_port),
                 "--mode", self.mode, "--codex", self.codex,
                 "--backend-config", str(self.home / ".config/smart-remarkable/backends.json")]
         if self.model:
@@ -208,7 +229,7 @@ class Service:
                        "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
                        "-o", "ConnectionAttempts=1", "-o", "ExitOnForwardFailure=yes",
                        "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-                       "-R", f"127.0.0.1:{PORT}:127.0.0.1:{PORT}", self.host]
+                       "-R", f"127.0.0.1:{PORT}:127.0.0.1:{self.local_port}", self.host]
             message = "Tablet SSH forwarding is unavailable; retrying when it reconnects"
             try:
                 self.require(command, message)
@@ -313,9 +334,13 @@ class Service:
             environment["REMARKABLE_FALLBACK_HOSTS"] = ",".join(self.hosts[1:])
         if self.model:
             environment["REMARKABLE_CODEX_MODEL"] = self.model
+        if self.instance:
+            environment["REMARKABLE_INSTANCE"] = self.instance
+        if self._local_port is not None:
+            environment["REMARKABLE_BRIDGE_PORT"] = str(self.local_port)
         if os.environ.get("CODEX_HOME"):
             environment["CODEX_HOME"] = os.environ["CODEX_HOME"]
-        config = {"Label": LABEL,
+        config = {"Label": self.label,
                   "ProgramArguments": [sys.executable, str(Path(__file__).resolve()), "supervise"],
                   "WorkingDirectory": str(self.repo), "EnvironmentVariables": environment,
                   "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 15,

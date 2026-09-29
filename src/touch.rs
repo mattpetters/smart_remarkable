@@ -136,7 +136,7 @@ impl Touch {
 
         let device_path = match device_model {
             DeviceModel::Remarkable2 => "/dev/input/event2",
-            DeviceModel::RemarkablePaperPro => "/dev/input/event3",
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => "/dev/input/event3",
             DeviceModel::Unknown => "/dev/input/event2", // Default to RM2
         };
 
@@ -461,7 +461,7 @@ impl Touch {
         let TouchMode::Real { input_device, device_model, .. } = &mut self.mode else {
             return Ok(());
         };
-        anyhow::ensure!(*device_model == DeviceModel::RemarkablePaperPro, "Page scrolling currently supports Paper Pro only");
+        anyhow::ensure!(device_model.is_color(), "Page scrolling requires a Paper Pro device");
         let device = input_device.as_mut().ok_or_else(|| anyhow::anyhow!("No touch input writer"))?;
         let mut start = Vec::new();
         for (slot, x) in [(0, 310), (1, 430)] {
@@ -789,7 +789,7 @@ impl Touch {
         let (screen_width, screen_height) = Self::screen_dimensions(device_model);
 
         match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 let x_input = (x_normalized * screen_width as f32) as i32;
                 let y_input = (y_normalized * screen_height as f32) as i32;
                 (x_input, y_input)
@@ -810,7 +810,7 @@ impl Touch {
         let y_normalized = y as f32 / screen_height as f32;
 
         let virt = match device_model {
-            DeviceModel::RemarkablePaperPro => {
+            DeviceModel::RemarkablePaperPro | DeviceModel::RemarkablePaperProMove => {
                 let x_input = (x_normalized * VIRTUAL_WIDTH as f32) as i32;
                 let y_input = (y_normalized * VIRTUAL_HEIGHT as f32) as i32;
                 (x_input, y_input)
@@ -831,6 +831,7 @@ impl Touch {
         match device_model {
             DeviceModel::Remarkable2 => (1404, 1872),
             DeviceModel::RemarkablePaperPro => (2065, 2833),
+            DeviceModel::RemarkablePaperProMove => (1248, 2208),
             DeviceModel::Unknown => (1404, 1872), // Default to RM2
         }
     }
@@ -915,5 +916,18 @@ mod palette_tests {
         assert!(!Touch::ballpoint_needs_selection(active));
         assert!(Touch::ballpoint_needs_selection(PenTool::Unknown));
         assert!(Touch::ballpoint_needs_selection(PenTool::Fineliner));
+    }
+}
+
+#[cfg(test)]
+mod device_geometry_tests {
+    use super::*;
+    #[test]
+    fn move_touch_uses_its_own_panel_range() {
+        let model = DeviceModel::RemarkablePaperProMove;
+        assert_eq!(Touch::screen_dimensions(&model), (1248, 2208));
+        assert_eq!(Touch::virtual_to_input((384, 512), &model), (624, 1104));
+        assert_eq!(Touch::input_to_virtual((624, 1104), &model), (384, 512));
+        assert_eq!(Touch::screen_dimensions(&DeviceModel::RemarkablePaperPro), (2065, 2833));
     }
 }
